@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import fs from "node:fs";
 import path from "node:path";
 import * as bundledTs from "typescript";
+import type { SymbolKind } from "./schemas.js";
 
 export type TypeScriptSource = "workspace" | "bundled";
 
@@ -74,6 +75,105 @@ export interface ProjectIndex {
   skippedDirs: Record<string, number>;
   tsconfigPath: string | null;
   tsconfigWarning: string | null;
+}
+
+export function isTestPath(relPath: string): boolean {
+  const normalized = toForwardSlashes(relPath).replace(/^\.\//, "");
+  const segments = normalized.split("/").filter((s) => s.length > 0);
+  if (segments.length === 0) return false;
+  for (const seg of segments) {
+    if (seg === "__tests__" || seg === "test" || seg === "tests") return true;
+  }
+  const base = segments[segments.length - 1] as string;
+  return /\.(test|spec)\./.test(base);
+}
+
+export type DeclarationNode =
+  | bundledTs.FunctionDeclaration
+  | bundledTs.VariableDeclaration
+  | bundledTs.ClassDeclaration
+  | bundledTs.MethodDeclaration
+  | bundledTs.InterfaceDeclaration
+  | bundledTs.TypeAliasDeclaration;
+
+export interface RawSymbol {
+  name: string;
+  kind: SymbolKind;
+  file: string;
+  line: number;
+  exported: boolean;
+  is_test: boolean;
+  doc_summary: string | null;
+  startOffset: number;
+  endOffset: number;
+  declaration: DeclarationNode;
+  rangeNode: bundledTs.Node;
+}
+
+function firstSentence(text: string): string {
+  const raw = text.replace(/\r\n/g, "\n");
+  let cut = raw.length;
+  const dotSpace = raw.indexOf(". ");
+  if (dotSpace !== -1) cut = Math.min(cut, dotSpace + 1);
+  const dotNl = raw.indexOf(".\n");
+  if (dotNl !== -1) cut = Math.min(cut, dotNl + 1);
+  const para = raw.indexOf("\n\n");
+  if (para !== -1) cut = Math.min(cut, para);
+  let sentence = raw.slice(0, cut).replace(/\s+/g, " ").trim();
+  if (sentence.length > 200) sentence = sentence.slice(0, 200);
+  return sentence;
+}
+
+function jsDocText(
+  ts: typeof bundledTs,
+  node: bundledTs.Node,
+): string | null {
+  const jsDocs = (node as { jsDoc?: unknown }).jsDoc;
+  if (!Array.isArray(jsDocs)) return null;
+  const parts: string[] = [];
+  for (const doc of jsDocs) {
+    const comment = (doc as { comment?: unknown }).comment;
+    if (typeof comment === "string") {
+      parts.push(comment);
+    } else if (Array.isArray(comment)) {
+      parts.push(ts.displayPartsToString(comment));
+    }
+  }
+  const text = parts.join(" ").trim();
+  return text.length > 0 ? text : null;
+}
+
+function docSummaryFor(
+  ts: typeof bundledTs,
+  checker: bundledTs.TypeChecker,
+  nameNode: bundledTs.Node,
+  statement: bundledTs.Node,
+  variableStatement: bundledTs.VariableStatement | null,
+): string | null {
+  let text: string | null = null;
+  try {
+    const sym = checker.getSymbolAtLocation(
+      nameNode as bundledTs.DeclarationName,
+    );
+    if (sym) {
+      const rendered = ts.displayPartsToString(
+        sym.getDocumentationComment(checker),
+      ).trim();
+      if (rendered.length > 0) text = rendered;
+    }
+  } catch {
+    text = null;
+  }
+  if (!text) {
+    // Fallback: variable statements (const f = () => {}) often do not
+    // surface their JSDoc through the checker symbol for the inner
+    // VariableDeclaration, so read the statement's jsDoc directly.
+    text =
+      jsDocText(ts, statement) ??
+      (variableStatement ? jsDocText(ts, variableStatement) : null);
+  }
+  if (!text) return null;
+  return firstSentence(text);
 }
 
 export interface BuildProjectOptions {
@@ -257,6 +357,7 @@ export function buildProject(
     } else {
       tsconfigWarning =
         "tsconfig matched no source files; indexing all walked source files.";
+      delete deniedByReason["not-in-tsconfig"];
       rootNames = candidateFiles;
     }
   } else {
@@ -322,3 +423,257 @@ export function buildProject(
     tsconfigWarning,
   };
 }
+
+function declarationLine(
+  sourceFile: bundledTs.SourceFile,
+  node: bundledTs.Node,
+): number {
+  const pos = node.getStart(sourceFile, false);
+  return sourceFile.getLineAndCharacterOfPosition(pos).line + 1;
+}
+
+function unwrapParens(
+  ts: typeof bundledTs,
+  expr: bundledTs.Expression,
+): bundledTs.Expression {
+  let current = expr;
+  while (ts.isParenthesizedExpression(current)) {
+    current = current.expression;
+  }
+  return current;
+}
+
+function variableKind(
+  ts: typeof bundledTs,
+  decl: bundledTs.VariableDeclaration,
+): SymbolKind {
+  const init = decl.initializer;
+  if (init) {
+    const unwrapped = unwrapParens(ts, init);
+    if (
+      ts.isArrowFunction(unwrapped) ||
+      ts.isFunctionExpression(unwrapped)
+    ) {
+      return "function";
+    }
+  }
+  return "const";
+}
+
+function hasExportModifier(node: bundledTs.Node): boolean {
+  const mods = (node as { modifiers?: readonly bundledTs.Modifier[] }).modifiers;
+  if (!mods) return false;
+  return mods.some(
+    (m) =>
+      m.kind === bundledTs.SyntaxKind.ExportKeyword ||
+      m.kind === bundledTs.SyntaxKind.DefaultKeyword,
+  );
+}
+
+interface FileExportNames {
+  named: Set<string>;
+  defaultNames: Set<string>;
+}
+
+function collectFileExportNames(
+  ts: typeof bundledTs,
+  sourceFile: bundledTs.SourceFile,
+): FileExportNames {
+  const named = new Set<string>();
+  const defaultNames = new Set<string>();
+  for (const stmt of sourceFile.statements) {
+    if (ts.isExportDeclaration(stmt)) {
+      // Re-exports (with moduleSpecifier) create no symbols.
+      if (stmt.moduleSpecifier) continue;
+      const clause = stmt.exportClause;
+      if (clause && ts.isNamedExports(clause)) {
+        for (const el of clause.elements) {
+          named.add(el.propertyName ? el.propertyName.text : el.name.text);
+        }
+      }
+    } else if (ts.isExportAssignment(stmt)) {
+      if (!stmt.isExportEquals && ts.isIdentifier(stmt.expression)) {
+        defaultNames.add(stmt.expression.text);
+      }
+    }
+  }
+  return { named, defaultNames };
+}
+
+function isSkippableMethod(
+  ts: typeof bundledTs,
+  member: bundledTs.MethodDeclaration,
+): boolean {
+  if (!member.name || !ts.isIdentifier(member.name)) return true;
+  const text = member.name.text;
+  if (text === "constructor") return true;
+  if (ts.isGetAccessorDeclaration(member)) return true;
+  if (ts.isSetAccessorDeclaration(member)) return true;
+  const mods = member.modifiers ?? [];
+  for (const m of mods) {
+    if (m.kind === bundledTs.SyntaxKind.PrivateKeyword) return true;
+  }
+  if (text.startsWith("#")) return true;
+  return false;
+}
+
+export function extractSymbols(project: ProjectIndex): RawSymbol[] {
+  const ts = project.ts;
+  const checker = project.program.getTypeChecker();
+  const out: RawSymbol[] = [];
+  const seenFirst = new Set<string>();
+  const recordFirst = (key: string): boolean => {
+    if (seenFirst.has(key)) return false;
+    seenFirst.add(key);
+    return true;
+  };
+
+  for (const rel of project.files) {
+    const abs = path.join(project.root, rel);
+    const sourceFile = project.program.getSourceFile(abs);
+    if (!sourceFile) continue;
+    const is_test = isTestPath(rel);
+    const exports = collectFileExportNames(ts, sourceFile);
+
+    for (const stmt of sourceFile.statements) {
+      if (ts.isFunctionDeclaration(stmt)) {
+        if (!stmt.name) continue;
+        const name = stmt.name.text;
+        if (!recordFirst(`fn:${rel}:${name}`)) continue;
+        const exported =
+          hasExportModifier(stmt) ||
+          exports.named.has(name) ||
+          exports.defaultNames.has(name);
+        out.push({
+          name,
+          kind: "function",
+          file: rel,
+          line: declarationLine(sourceFile, stmt),
+          exported,
+          is_test,
+          doc_summary: docSummaryFor(ts, checker, stmt.name, stmt, null),
+          startOffset: stmt.getStart(sourceFile, false),
+          endOffset: stmt.getEnd(),
+          declaration: stmt,
+          rangeNode: stmt,
+        });
+      } else if (ts.isVariableStatement(stmt)) {
+        const stmtExported = hasExportModifier(stmt);
+        for (const decl of stmt.declarationList.declarations) {
+          if (!ts.isIdentifier(decl.name)) continue;
+          const name = decl.name.text;
+          if (!recordFirst(`var:${rel}:${name}`)) continue;
+          out.push({
+            name,
+            kind: variableKind(ts, decl),
+            file: rel,
+            line: declarationLine(sourceFile, decl),
+            exported:
+              stmtExported ||
+              exports.named.has(name) ||
+              exports.defaultNames.has(name),
+            is_test,
+            doc_summary: docSummaryFor(ts, checker, decl.name, decl, stmt),
+            startOffset: decl.getStart(sourceFile, false),
+            endOffset: decl.getEnd(),
+            declaration: decl,
+            rangeNode: stmt,
+          });
+        }
+      } else if (ts.isClassDeclaration(stmt)) {
+        if (!stmt.name) continue;
+        const className = stmt.name.text;
+        if (!recordFirst(`class:${rel}:${className}`)) continue;
+        const classExported =
+          hasExportModifier(stmt) ||
+          exports.named.has(className) ||
+          exports.defaultNames.has(className);
+        out.push({
+          name: className,
+          kind: "class",
+          file: rel,
+          line: declarationLine(sourceFile, stmt),
+          exported: classExported,
+          is_test,
+          doc_summary: docSummaryFor(ts, checker, stmt.name, stmt, null),
+          startOffset: stmt.getStart(sourceFile, false),
+          endOffset: stmt.getEnd(),
+          declaration: stmt,
+          rangeNode: stmt,
+        });
+        for (const member of stmt.members) {
+          if (!ts.isMethodDeclaration(member)) continue;
+          if (isSkippableMethod(ts, member)) continue;
+          const mName = member.name as bundledTs.Identifier;
+          const fullName = `${className}.${mName.text}`;
+          if (!recordFirst(`method:${rel}:${fullName}`)) continue;
+          out.push({
+            name: fullName,
+            kind: "method",
+            file: rel,
+            line: declarationLine(sourceFile, member),
+            exported: classExported,
+            is_test,
+            doc_summary: docSummaryFor(
+              ts,
+              checker,
+              member.name as bundledTs.Node,
+              member,
+              null,
+            ),
+            startOffset: member.getStart(sourceFile, false),
+            endOffset: member.getEnd(),
+            declaration: member,
+            rangeNode: member,
+          });
+        }
+      } else if (ts.isInterfaceDeclaration(stmt)) {
+        const name = stmt.name.text;
+        if (!recordFirst(`iface:${rel}:${name}`)) continue;
+        out.push({
+          name,
+          kind: "interface",
+          file: rel,
+          line: declarationLine(sourceFile, stmt),
+          exported:
+            hasExportModifier(stmt) ||
+            exports.named.has(name) ||
+            exports.defaultNames.has(name),
+          is_test,
+          doc_summary: docSummaryFor(ts, checker, stmt.name, stmt, null),
+          startOffset: stmt.getStart(sourceFile, false),
+          endOffset: stmt.getEnd(),
+          declaration: stmt,
+          rangeNode: stmt,
+        });
+      } else if (ts.isTypeAliasDeclaration(stmt)) {
+        const name = stmt.name.text;
+        if (!recordFirst(`type:${rel}:${name}`)) continue;
+        out.push({
+          name,
+          kind: "type",
+          file: rel,
+          line: declarationLine(sourceFile, stmt),
+          exported:
+            hasExportModifier(stmt) ||
+            exports.named.has(name) ||
+            exports.defaultNames.has(name),
+          is_test,
+          doc_summary: docSummaryFor(ts, checker, stmt.name, stmt, null),
+          startOffset: stmt.getStart(sourceFile, false),
+          endOffset: stmt.getEnd(),
+          declaration: stmt,
+          rangeNode: stmt,
+        });
+      }
+    }
+  }
+
+  out.sort((a, b) => {
+    if (a.file < b.file) return -1;
+    if (a.file > b.file) return 1;
+    return a.startOffset - b.startOffset;
+  });
+  return out;
+}
+

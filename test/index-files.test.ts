@@ -208,4 +208,17 @@ describe("buildProject files", () => {
     expect(project.files).not.toContain("node_modules/skip.ts");
     expect(project.files).not.toContain("src/node_modules/x.ts");
   });
+
+  it("clears not-in-tsconfig when tsconfig matches nothing", () => {
+    const dir = makeTempProject({
+      "src/a.ts": "export const a = 1;\n",
+      "src/b.ts": "export const b = 2;\n",
+      "tsconfig.json": JSON.stringify({ include: ["nowhere/**/*"] }),
+    });
+    const project = buildProject(dir);
+    expect(project.tsconfigWarning).toMatch(/matched no source files/);
+    expect(project.files).toContain("src/a.ts");
+    expect(project.files).toContain("src/b.ts");
+    expect("not-in-tsconfig" in project.deniedByReason).toBe(false);
+  });
 });

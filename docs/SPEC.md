@@ -54,3 +54,16 @@ get_signature in {symbol_id, compare_to?:symbol_id}
   is_async, exported, compat?:{same_param_count, params_assignable:boolean|"unknown",
   return_assignable:boolean|"unknown", async_match}}
   compat is computed by the checker. Use "unknown" if assignability cannot be determined.
+
+## Amendments (Task 3)
+- line = 1-based line where the declaration starts, excluding leading JSDoc. For variables, the line of the
+  variable declaration (not the statement).
+- Not indexed: private/#private methods, constructors, getters/setters, class property arrow functions,
+  anonymous default exports (export default function(){}), destructured declarations, namespaces.
+- Static methods ARE indexed, named "Class.method".
+- exported = has the export modifier, OR the name appears in a local `export { name }` (no "from") or in
+  `export default name`. Re-exports `export { x } from "./y"` do not create symbols. A method's exported flag
+  equals its class's exported flag.
+- is_test: path has a segment equal to __tests__, test, or tests, OR the file name matches /\.(test|spec)\./.
+- Symbols are ordered by (file path, start offset), where start offset is the start of the declaration node
+  excluding leading JSDoc. Compare file paths with plain string < and >, not localeCompare.

@@ -1,5 +1,5 @@
 import path from "node:path";
-import { buildProject, toForwardSlashes } from "./index.js";
+import { buildProject, extractSymbols, toForwardSlashes } from "./index.js";
 
 function getFlag(args: string[], name: string): string | undefined {
   const idx = args.indexOf(name);
@@ -7,10 +7,14 @@ function getFlag(args: string[], name: string): string | undefined {
   return args[idx + 1];
 }
 
+function hasFlag(args: string[], name: string): boolean {
+  return args.includes(name);
+}
+
 function printUsage(): void {
   console.log("Usage: cli <command> [flags]");
   console.log("Commands: stats");
-  console.log("Flags: --root <dir>  --tsconfig <path>");
+  console.log("Flags: --root <dir>  --tsconfig <path>  --symbols");
 }
 
 const command = process.argv[2];
@@ -59,6 +63,12 @@ if (command === "stats") {
   } else {
     for (const [name, count] of skipped) {
       console.log(`  ${name}: ${count}`);
+    }
+  }
+  if (hasFlag(rest, "--symbols")) {
+    for (const s of extractSymbols(project)) {
+      const tags = `${s.exported ? "  [exported]" : ""}${s.is_test ? "  [test]" : ""}`;
+      console.log(`${s.file}:${s.line}  ${s.kind}  ${s.name}${tags}`);
     }
   }
 } else {
