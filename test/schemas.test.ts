@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   ErrEnvelopeSchema,
   GetDefinitionInputSchema,
+  GetDefinitionOutputSchema,
   GetReferencesInputSchema,
   GetSignatureInputSchema,
   OkEnvelopeSchema,
+  ReferenceKindSchema,
   ResultEnvelopeSchema,
   SearchSymbolsInputSchema,
   err,
@@ -81,6 +83,76 @@ describe("schemas", () => {
     const bad = err("INVALID_ARGS", "bad input");
     expect(ErrEnvelopeSchema.parse(bad).ok).toBe(false);
     expect(ResultEnvelopeSchema.parse(bad).ok).toBe(false);
+  });
+
+  it("rejects whitespace-only query", () => {
+    expect(() =>
+      SearchSymbolsInputSchema.parse({ query: "   " }),
+    ).toThrow();
+  });
+
+  it("search limit boundaries", () => {
+    expect(
+      SearchSymbolsInputSchema.parse({ query: "foo", limit: 10 }),
+    ).toMatchObject({ limit: 10 });
+    expect(() =>
+      SearchSymbolsInputSchema.parse({ query: "foo", limit: 0 }),
+    ).toThrow();
+  });
+
+  it("max_lines boundaries", () => {
+    expect(
+      GetDefinitionInputSchema.parse({ symbol_id: "s_1", max_lines: 120 }),
+    ).toMatchObject({ max_lines: 120 });
+    expect(() =>
+      GetDefinitionInputSchema.parse({ symbol_id: "s_1", max_lines: 0 }),
+    ).toThrow();
+  });
+
+  it("get_references limit boundaries", () => {
+    expect(
+      GetReferencesInputSchema.parse({ symbol_id: "s_1", limit: 20 }),
+    ).toMatchObject({ limit: 20 });
+    expect(() =>
+      GetReferencesInputSchema.parse({ symbol_id: "s_1", limit: 21 }),
+    ).toThrow();
+  });
+
+  it('reference kind accepts "other"', () => {
+    expect(ReferenceKindSchema.parse("other")).toBe("other");
+    expect(
+      GetReferencesInputSchema.parse({
+        symbol_id: "s_1",
+        kinds: ["call", "import", "type_use", "other"],
+      }),
+    ).toMatchObject({ kinds: ["call", "import", "type_use", "other"] });
+  });
+
+  it("definition output rejects in_current_diff true", () => {
+    const base = {
+      symbol: {
+        symbol_id: "s_1",
+        name: "foo",
+        kind: "function",
+        file: "src/a.ts",
+        line: 1,
+        exported: true,
+        is_test: false,
+        signature: "foo()",
+        doc_summary: null,
+      },
+      range: { start_line: 1, end_line: 3 },
+      body: "function foo() {}",
+      body_truncated: false,
+      line_count: 3,
+      imports_used: [],
+      in_current_diff: true,
+      deprecated: false,
+    };
+    expect(() => GetDefinitionOutputSchema.parse(base)).toThrow();
+    expect(
+      GetDefinitionOutputSchema.parse({ ...base, in_current_diff: false }),
+    ).toMatchObject({ in_current_diff: false });
   });
 });
 

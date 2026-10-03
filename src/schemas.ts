@@ -48,7 +48,7 @@ export type SymbolSummary = z.infer<typeof SymbolSummarySchema>;
 
 export const SearchSymbolsInputSchema = z
   .object({
-    query: z.string().min(1).max(100),
+    query: z.string().trim().min(1).max(100),
     kind: SymbolKindSchema.optional(),
     path_prefix: z.string().min(1).optional(),
     include_tests: z.boolean().default(false),
