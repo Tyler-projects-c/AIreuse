@@ -88,8 +88,7 @@ describe("buildProject files", () => {
     }
   });
 
-  it("excludes gitignored files when git repo", () => {
-    if (!gitAvailable()) return;
+  it.skipIf(!gitAvailable())("excludes gitignored files when git repo", () => {
     const dir = makeTempProject(
       {
         "src/ok.ts": "export const a = 1;\n",
@@ -124,5 +123,89 @@ describe("buildProject files", () => {
     const project = buildProject(dir);
     expect(project.tsSource).toBe("bundled");
     expect(project.tsVersion.length).toBeGreaterThan(0);
+  });
+
+  it("honors an explicit tsconfig path", () => {
+    const dir = makeTempProject({
+      "src/kept.ts": "export const a = 1;\n",
+      "other/extra.ts": "export const b = 2;\n",
+      "custom.json": JSON.stringify({
+        compilerOptions: { strict: true },
+        include: ["src/**/*"],
+      }),
+    });
+    const project = buildProject(dir, { tsconfig: "custom.json" });
+    expect(project.tsconfigPath?.endsWith("custom.json")).toBe(true);
+    expect(project.files).toContain("src/kept.ts");
+    expect(project.files).not.toContain("other/extra.ts");
+    expect(project.deniedByReason["not-in-tsconfig"]).toBe(1);
+  });
+
+  it("throws for a missing explicit tsconfig", () => {
+    const dir = makeTempProject({
+      "src/ok.ts": "export const a = 1;\n",
+    });
+    expect(() => buildProject(dir, { tsconfig: "nope.json" })).toThrow(
+      /tsconfig not found/,
+    );
+  });
+
+  it("warns on references-only tsconfig and indexes walked files", () => {
+    const dir = makeTempProject({
+      "src/ok.ts": "export const a = 1;\n",
+      "tsconfig.json": JSON.stringify({ references: [{ path: "./other" }] }),
+    });
+    const project = buildProject(dir);
+    expect(project.tsconfigWarning).toMatch(/references/);
+    expect(project.files).toContain("src/ok.ts");
+  });
+
+  it("counts source files outside the tsconfig as not-in-tsconfig", () => {
+    const dir = makeTempProject({
+      "src/kept.ts": "export const a = 1;\n",
+      "other/outside.ts": "export const b = 2;\n",
+      "tsconfig.json": JSON.stringify({ include: ["src/**/*"] }),
+    });
+    const project = buildProject(dir);
+    expect(project.files).toContain("src/kept.ts");
+    expect(project.files).not.toContain("other/outside.ts");
+    expect(project.deniedByReason["not-in-tsconfig"]).toBe(1);
+  });
+
+  it.skipIf(!gitAvailable())("keeps non-ascii filenames in git repos", () => {
+    const dir = makeTempProject(
+      {
+        "src/ok.ts": "export const a = 1;\n",
+        "src/é.ts": "export const e = 1;\n",
+      },
+      { git: true },
+    );
+    execFileSync("git", ["add", "-A"], { cwd: dir, stdio: "ignore" });
+    const project = buildProject(dir);
+    expect(project.files).toContain("src/é.ts");
+    expect(project.deniedByReason["gitignored"] ?? 0).toBe(0);
+  });
+
+  it("excludes .d.mts as dts-file", () => {
+    const dir = makeTempProject({
+      "src/ok.ts": "export const a = 1;\n",
+      "types.d.mts": "export declare const d: number;\n",
+    });
+    const project = buildProject(dir);
+    expect(project.files).toContain("src/ok.ts");
+    expect(project.files).not.toContain("types.d.mts");
+    expect(project.deniedByReason["dts-file"]).toBe(1);
+  });
+
+  it("reports skipped node_modules directory", () => {
+    const dir = makeTempProject({
+      "src/ok.ts": "export const a = 1;\n",
+      "node_modules/skip.ts": "export const s = 1;\n",
+      "src/node_modules/x.ts": "export const x = 1;\n",
+    });
+    const project = buildProject(dir);
+    expect(project.skippedDirs["node_modules"]).toBe(2);
+    expect(project.files).not.toContain("node_modules/skip.ts");
+    expect(project.files).not.toContain("src/node_modules/x.ts");
   });
 });

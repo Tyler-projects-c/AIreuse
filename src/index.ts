@@ -71,6 +71,7 @@ export interface ProjectIndex {
   program: bundledTs.Program;
   files: string[];
   deniedByReason: Record<string, number>;
+  skippedDirs: Record<string, number>;
   tsconfigPath: string | null;
   tsconfigWarning: string | null;
 }
@@ -93,7 +94,7 @@ function classifyFile(absRoot: string, absFile: string): string | null {
   const rel = toRepoRelative(absRoot, absFile);
   const denied = deniedReason(rel);
   if (denied) return denied;
-  if (absFile.endsWith(".d.ts")) return "dts-file";
+  if (/\.d\.[cm]?ts$/.test(absFile)) return "dts-file";
   try {
     if (fs.statSync(absFile).size > MAX_FILE_BYTES) return "too-large";
   } catch {
@@ -116,15 +117,15 @@ function classifyFile(absRoot: string, absFile: string): string | null {
 
 function listGitVisibleFiles(absRoot: string): Set<string> | null {
   try {
-    const out = execFileSync(
+    const out: Buffer = execFileSync(
       "git",
-      ["ls-files", "--cached", "--others", "--exclude-standard"],
-      { cwd: absRoot, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+      ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+      { cwd: absRoot, stdio: ["ignore", "pipe", "ignore"] },
     );
     const visible = new Set<string>();
-    for (const line of out.split("\n")) {
-      const t = line.trim();
-      if (t.length > 0) visible.add(toForwardSlashes(t));
+    const nul = String.fromCharCode(0);
+    for (const entry of out.toString("utf8").split(nul)) {
+      if (entry.length > 0) visible.add(toForwardSlashes(entry));
     }
     return visible;
   } catch {
@@ -132,8 +133,14 @@ function listGitVisibleFiles(absRoot: string): Set<string> | null {
   }
 }
 
-function walkFiles(absRoot: string): string[] {
+export interface WalkResult {
+  files: string[];
+  skippedDirs: Record<string, number>;
+}
+
+function walkFiles(absRoot: string): WalkResult {
   const found: string[] = [];
+  const skippedDirs: Record<string, number> = {};
   const stack: string[] = [absRoot];
   while (stack.length > 0) {
     const dir = stack.pop() as string;
@@ -146,13 +153,17 @@ function walkFiles(absRoot: string): string[] {
     for (const entry of entries) {
       const abs = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        if (!isDeniedPath(toRepoRelative(absRoot, abs))) stack.push(abs);
+        if (isDeniedPath(toRepoRelative(absRoot, abs))) {
+          skippedDirs[entry.name] = (skippedDirs[entry.name] ?? 0) + 1;
+        } else {
+          stack.push(abs);
+        }
       } else if (entry.isFile()) {
         found.push(abs);
       }
     }
   }
-  return found;
+  return { files: found, skippedDirs };
 }
 
 export function buildProject(
@@ -195,7 +206,7 @@ export function buildProject(
     throw new Error(`tsconfig not found: ${candidate}`);
   }
 
-  const walked = walkFiles(absRoot);
+  const { files: walked, skippedDirs } = walkFiles(absRoot);
   const deniedByReason: Record<string, number> = {};
   const gitVisible = listGitVisibleFiles(absRoot);
   // Only TS/JS source files are candidates for the index. Other file
@@ -232,8 +243,22 @@ export function buildProject(
   if (parsed) {
     options = parsed.options;
     const parsedSet = new Set(parsed.fileNames.map((f) => path.resolve(f)));
-    const kept = candidateFiles.filter((f) => parsedSet.has(path.resolve(f)));
-    rootNames = kept.length > 0 ? kept : candidateFiles;
+    const kept: string[] = [];
+    for (const f of candidateFiles) {
+      if (parsedSet.has(path.resolve(f))) {
+        kept.push(f);
+      } else {
+        deniedByReason["not-in-tsconfig"] =
+          (deniedByReason["not-in-tsconfig"] ?? 0) + 1;
+      }
+    }
+    if (kept.length > 0) {
+      rootNames = kept;
+    } else {
+      tsconfigWarning =
+        "tsconfig matched no source files; indexing all walked source files.";
+      rootNames = candidateFiles;
+    }
   } else {
     options = {
       allowJs: true,
@@ -292,12 +317,8 @@ export function buildProject(
     program,
     files,
     deniedByReason,
+    skippedDirs,
     tsconfigPath,
     tsconfigWarning,
   };
 }
-
-
-
-
-

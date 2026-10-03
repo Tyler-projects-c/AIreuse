@@ -50,6 +50,17 @@ if (command === "stats") {
       console.log(`  ${reason}: ${count}`);
     }
   }
+  console.log("skipped directories:");
+  const skipped = Object.entries(project.skippedDirs).sort((a, b) =>
+    a[0] < b[0] ? -1 : 1,
+  );
+  if (skipped.length === 0) {
+    console.log("  (none)");
+  } else {
+    for (const [name, count] of skipped) {
+      console.log(`  ${name}: ${count}`);
+    }
+  }
 } else {
   printUsage();
   process.exitCode = 1;
