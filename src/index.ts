@@ -686,6 +686,37 @@ export function extractSymbols(project: ProjectIndex): RawSymbol[] {
   return out;
 }
 
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * The checker renders imported module types as `typeof import("C:/abs/path/src/b")`.
+ * Rewrite in-project absolute paths to import("./<relative>") and other absolute
+ * paths to import("<external>"), then blank out any remaining project root.
+ */
+export function scrubPaths(text: string, absRoot: string): string {
+  const root = toForwardSlashes(path.resolve(absRoot));
+  const lowerRoot = root.toLowerCase();
+  let out = text.replace(/import\("([^"]*)"\)/g, (_match, rawPath: string) => {
+    const normalized = toForwardSlashes(rawPath);
+    const lower = normalized.toLowerCase();
+    if (lower === lowerRoot || lower.startsWith(`${lowerRoot}/`)) {
+      const rel = normalized.slice(root.length).replace(/^\/+/, "");
+      return `import("./${rel}")`;
+    }
+    if (/^[A-Za-z]:\//.test(normalized) || normalized.startsWith("/")) {
+      return 'import("<external>")';
+    }
+    return `import("${normalized}")`;
+  });
+  if (root.length > 0) {
+    const pattern = escapeRegExp(root).replace(/\//g, "[\\\\/]");
+    out = out.replace(new RegExp(pattern, "gi"), ".");
+  }
+  return out;
+}
+
 function collapseSignature(text: string): string {
   let single = text.replace(/\s+/g, " ").trim();
   if (single.length > 300) {
@@ -698,17 +729,20 @@ function signatureFor(
   ts: typeof bundledTs,
   checker: bundledTs.TypeChecker,
   raw: RawSymbol,
+  absRoot: string,
 ): string {
   try {
     if (raw.kind === "class") {
-      return collapseSignature(`class ${raw.name}`);
+      return collapseSignature(scrubPaths(`class ${raw.name}`, absRoot));
     }
     if (raw.kind === "interface") {
-      return collapseSignature(`interface ${raw.name}`);
+      return collapseSignature(scrubPaths(`interface ${raw.name}`, absRoot));
     }
     if (raw.kind === "type") {
       const decl = raw.declaration as bundledTs.TypeAliasDeclaration;
-      return collapseSignature(`type ${raw.name} = ${decl.type.getText()}`);
+      return collapseSignature(
+        scrubPaths(`type ${raw.name} = ${decl.type.getText()}`, absRoot),
+      );
     }
     if (raw.kind === "const") {
       const decl = raw.declaration as bundledTs.VariableDeclaration;
@@ -718,7 +752,9 @@ function signatureFor(
         undefined,
         ts.TypeFormatFlags.NoTruncation,
       );
-      return collapseSignature(`const ${raw.name}: ${typeString}`);
+      return collapseSignature(
+        scrubPaths(`const ${raw.name}: ${typeString}`, absRoot),
+      );
     }
     // function or method: "<name><checker signature>".
     let target: bundledTs.Node = raw.declaration;
@@ -741,7 +777,7 @@ function signatureFor(
         undefined,
         ts.TypeFormatFlags.NoTruncation,
       );
-      return collapseSignature(`${raw.name}${rendered}`);
+      return collapseSignature(scrubPaths(`${raw.name}${rendered}`, absRoot));
     }
   } catch {
     // fall through to the unknown-signature fallback below
@@ -786,7 +822,7 @@ export function buildIndex(project: ProjectIndex): SymbolIndex {
     const sym: IndexedSymbol = {
       ...raw,
       symbol_id: `s_${i + 1}`,
-      signature: signatureFor(ts, checker, raw),
+      signature: signatureFor(ts, checker, raw, project.root),
     };
     byId.set(sym.symbol_id, sym);
     return sym;

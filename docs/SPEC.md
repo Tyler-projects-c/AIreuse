@@ -78,3 +78,19 @@ get_signature in {symbol_id, compare_to?:symbol_id}
 - findEnclosing(file, offset) returns the innermost indexed symbol whose [startOffset, endOffset) contains offset,
   or undefined. Methods are inside their class, so a method wins over its class.
 
+## Amendments (Task 4)
+- Tool functions take `unknown` input; invalid input returns INVALID_ARGS with a short message (never throw).
+- Tokenization: split on non-alphanumeric characters and camelCase boundaries, lowercase, drop empty tokens
+  (e.g. "exportCsv" -> export, csv; "parse_user_id" -> parse, user, id; "HTTPServer" -> http, server).
+- Score = full-name bonus + sum over DISTINCT query tokens of: 3 if the token is in the name tokens,
+  1.5 if in the doc_summary tokens, 1 if in the signature tokens (a token can score in several sources).
+  Full-name bonus = 5 if the whole trimmed query equals the symbol's name case-insensitively, or equals the part
+  after the dot for "Class.method" names. Tokens match exactly (no prefix or substring matching yet).
+  Symbols with score 0 are not returned.
+- match = the source (name, doc, signature) with the highest total contribution (the full-name bonus counts
+  toward name); ties prefer name, then doc, then signature.
+- Sort by score desc, then file asc, then line asc (plain string comparison).
+- truncated = true if more matches existed than were returned (limit) OR results were cut to fit the 6144-byte
+  serialized cap. When cutting for size, remove results from the end.
+- path_prefix must be repo-relative: reject (INVALID_ARGS) if it is absolute, starts with a drive letter, or
+  contains ".." segments. Normalize backslashes to forward slashes and strip a leading "./".

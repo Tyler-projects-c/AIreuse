@@ -1,30 +1,24 @@
 import path from "node:path";
+import { parseArgs } from "node:util";
 import { buildIndex, buildProject, toForwardSlashes } from "./index.js";
-
-function getFlag(args: string[], name: string): string | undefined {
-  const idx = args.indexOf(name);
-  if (idx === -1) return undefined;
-  return args[idx + 1];
-}
-
-function hasFlag(args: string[], name: string): boolean {
-  return args.includes(name);
-}
+import type { ProjectIndex, SymbolIndex } from "./index.js";
+import type { SearchSymbolsOutput } from "./schemas.js";
+import { createTools } from "./tools.js";
 
 function printUsage(): void {
   console.log("Usage: cli <command> [flags]");
-  console.log("Commands: stats");
-  console.log("Flags: --root <dir>  --tsconfig <path>  --symbols");
+  console.log("Commands: stats, search <query...>");
+  console.log("Flags: --root <dir>  --tsconfig <path>");
+  console.log(
+    "       --symbols  --json  --kind <kind>  --path-prefix <p>  --include-tests  --limit <n>",
+  );
 }
 
-const command = process.argv[2];
-const rest = process.argv.slice(3);
-
-if (command === "stats") {
-  const root = path.resolve(getFlag(rest, "--root") ?? ".");
-  const tsconfig = getFlag(rest, "--tsconfig");
-  const project = buildProject(root, tsconfig ? { tsconfig } : undefined);
-  const index = buildIndex(project);
+function printStats(
+  project: ProjectIndex,
+  index: SymbolIndex,
+  showSymbols: boolean,
+): void {
   console.log(`TypeScript: ${project.tsVersion} (${project.tsSource})`);
   console.log(
     `tsconfig: ${
@@ -76,19 +70,105 @@ if (command === "stats") {
     if (s.is_test) testCount++;
     else nonTest++;
   }
-  for (const kind of ["function", "method", "class", "interface", "type", "const"]) {
+  for (const kind of [
+    "function",
+    "method",
+    "class",
+    "interface",
+    "type",
+    "const",
+  ]) {
     console.log(`  ${kind}: ${byKind[kind] ?? 0}`);
   }
   console.log(`  non-test: ${nonTest}  test: ${testCount}`);
-  if (hasFlag(rest, "--symbols")) {
-    for (const s of index.all()) {
+  if (showSymbols) {
+    for (const s of all) {
       const tags = `${s.exported ? "  [exported]" : ""}${s.is_test ? "  [test]" : ""}`;
       console.log(
         `${s.symbol_id}  ${s.file}:${s.line}  ${s.kind}  ${s.name}${tags}  ${s.signature}`,
       );
     }
   }
-} else {
+}
+
+// __MAIN__
+
+function main(): void {
+  let parsedArgs;
+  try {
+    parsedArgs = parseArgs({
+      args: process.argv.slice(2),
+      options: {
+        root: { type: "string" },
+        tsconfig: { type: "string" },
+        json: { type: "boolean" },
+        kind: { type: "string" },
+        "path-prefix": { type: "string" },
+        "include-tests": { type: "boolean" },
+        limit: { type: "string" },
+        symbols: { type: "boolean" },
+      },
+      allowPositionals: true,
+      strict: true,
+    });
+  } catch {
+    printUsage();
+    process.exitCode = 1;
+    return;
+  }
+  const { values, positionals } = parsedArgs;
+  const root = path.resolve(values.root ?? ".");
+  const tsconfig = values.tsconfig;
+  const buildOpts = tsconfig ? { tsconfig } : undefined;
+  const command = positionals[0];
+
+  if (command === "stats") {
+    const project = buildProject(root, buildOpts);
+    const index = buildIndex(project);
+    printStats(project, index, values.symbols === true);
+    return;
+  }
+
+  if (command === "search") {
+    const project = buildProject(root, buildOpts);
+    const index = buildIndex(project);
+    const tools = createTools(index);
+    const input: Record<string, unknown> = {
+      query: positionals.slice(1).join(" "),
+    };
+    if (values.kind !== undefined) input.kind = values.kind;
+    if (values["path-prefix"] !== undefined) {
+      input.path_prefix = values["path-prefix"];
+    }
+    if (values["include-tests"] === true) input.include_tests = true;
+    if (values.limit !== undefined) input.limit = Number(values.limit);
+    const envelope = tools.search_symbols(input);
+    const asJson = values.json === true;
+    if (!envelope.ok) {
+      if (asJson) {
+        console.log(JSON.stringify(envelope));
+      } else {
+        console.error(`error: ${envelope.error.code}: ${envelope.error.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+    if (asJson) {
+      console.log(JSON.stringify(envelope));
+      return;
+    }
+    const data = envelope.data as SearchSymbolsOutput;
+    for (const r of data.results) {
+      console.log(
+        `${r.symbol_id}  ${r.kind}  ${r.name}  ${r.file}:${r.line}  ${r.signature}`,
+      );
+    }
+    if (data.truncated) console.log("(truncated)");
+    return;
+  }
+
   printUsage();
   process.exitCode = 1;
 }
+
+main();

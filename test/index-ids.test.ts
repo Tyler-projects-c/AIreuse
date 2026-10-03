@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildIndex, buildProject, toSummary } from "../src/index.js";
+import { buildIndex, buildProject, toForwardSlashes, toSummary } from "../src/index.js";
 import { SymbolSummarySchema } from "../src/schemas.js";
 import { makeTempProject } from "./helpers.js";
 
@@ -151,8 +151,19 @@ describe("index ids and signatures", () => {
     expect(index.findEnclosing("src/a.ts", gap)?.symbol_id).toBe(
       greeter!.symbol_id,
     );
-    expect(
-      index.findEnclosing("src/a.ts", Number.MAX_SAFE_INTEGER),
-    ).toBeUndefined();
+    expect(index.findEnclosing("src/a.ts", Number.MAX_SAFE_INTEGER)).toBeUndefined();
+  });
+
+  it("scrubs project paths out of signatures", () => {
+    const dir = makeTempProject({
+      "src/b.ts": "export const b: number = 1;\n",
+      "src/a.ts": 'import * as b from "./b";\nexport const ns = b;\n',
+    });
+    const index = buildIndex(buildProject(dir));
+    const ns = index.all().find((s) => s.name === "ns");
+    expect(ns).toBeDefined();
+    expect(ns?.signature).toContain('import("./src/b")');
+    expect(ns?.signature).not.toContain(toForwardSlashes(dir));
+    expect(ns?.signature).not.toContain(dir);
   });
 });
