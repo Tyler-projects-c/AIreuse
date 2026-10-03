@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import fs from "node:fs";
 import path from "node:path";
 import * as bundledTs from "typescript";
-import type { SymbolKind } from "./schemas.js";
+import type { SymbolKind, SymbolSummary } from "./schemas.js";
 
 export type TypeScriptSource = "workspace" | "bundled";
 
@@ -106,6 +106,7 @@ export interface RawSymbol {
   doc_summary: string | null;
   startOffset: number;
   endOffset: number;
+  nameOffset: number;
   declaration: DeclarationNode;
   rangeNode: bundledTs.Node;
 }
@@ -554,6 +555,7 @@ export function extractSymbols(project: ProjectIndex): RawSymbol[] {
           doc_summary: docSummaryFor(ts, checker, stmt.name, stmt, null),
           startOffset: stmt.getStart(sourceFile, false),
           endOffset: stmt.getEnd(),
+          nameOffset: stmt.name.getStart(sourceFile, false),
           declaration: stmt,
           rangeNode: stmt,
         });
@@ -576,6 +578,7 @@ export function extractSymbols(project: ProjectIndex): RawSymbol[] {
             doc_summary: docSummaryFor(ts, checker, decl.name, decl, stmt),
             startOffset: decl.getStart(sourceFile, false),
             endOffset: decl.getEnd(),
+            nameOffset: decl.name.getStart(sourceFile, false),
             declaration: decl,
             rangeNode: stmt,
           });
@@ -598,6 +601,7 @@ export function extractSymbols(project: ProjectIndex): RawSymbol[] {
           doc_summary: docSummaryFor(ts, checker, stmt.name, stmt, null),
           startOffset: stmt.getStart(sourceFile, false),
           endOffset: stmt.getEnd(),
+          nameOffset: stmt.name.getStart(sourceFile, false),
           declaration: stmt,
           rangeNode: stmt,
         });
@@ -623,6 +627,9 @@ export function extractSymbols(project: ProjectIndex): RawSymbol[] {
             ),
             startOffset: member.getStart(sourceFile, false),
             endOffset: member.getEnd(),
+            nameOffset: (
+              member.name as bundledTs.Identifier
+            ).getStart(sourceFile, false),
             declaration: member,
             rangeNode: member,
           });
@@ -643,6 +650,7 @@ export function extractSymbols(project: ProjectIndex): RawSymbol[] {
           doc_summary: docSummaryFor(ts, checker, stmt.name, stmt, null),
           startOffset: stmt.getStart(sourceFile, false),
           endOffset: stmt.getEnd(),
+          nameOffset: stmt.name.getStart(sourceFile, false),
           declaration: stmt,
           rangeNode: stmt,
         });
@@ -662,6 +670,7 @@ export function extractSymbols(project: ProjectIndex): RawSymbol[] {
           doc_summary: docSummaryFor(ts, checker, stmt.name, stmt, null),
           startOffset: stmt.getStart(sourceFile, false),
           endOffset: stmt.getEnd(),
+          nameOffset: stmt.name.getStart(sourceFile, false),
           declaration: stmt,
           rangeNode: stmt,
         });
@@ -677,3 +686,142 @@ export function extractSymbols(project: ProjectIndex): RawSymbol[] {
   return out;
 }
 
+function collapseSignature(text: string): string {
+  let single = text.replace(/\s+/g, " ").trim();
+  if (single.length > 300) {
+    single = single.slice(0, 297) + "...";
+  }
+  return single;
+}
+
+function signatureFor(
+  ts: typeof bundledTs,
+  checker: bundledTs.TypeChecker,
+  raw: RawSymbol,
+): string {
+  try {
+    if (raw.kind === "class") {
+      return collapseSignature(`class ${raw.name}`);
+    }
+    if (raw.kind === "interface") {
+      return collapseSignature(`interface ${raw.name}`);
+    }
+    if (raw.kind === "type") {
+      const decl = raw.declaration as bundledTs.TypeAliasDeclaration;
+      return collapseSignature(`type ${raw.name} = ${decl.type.getText()}`);
+    }
+    if (raw.kind === "const") {
+      const decl = raw.declaration as bundledTs.VariableDeclaration;
+      const t = checker.getTypeAtLocation(decl.name);
+      const typeString = checker.typeToString(
+        t,
+        undefined,
+        ts.TypeFormatFlags.NoTruncation,
+      );
+      return collapseSignature(`const ${raw.name}: ${typeString}`);
+    }
+    // function or method: "<name><checker signature>".
+    let target: bundledTs.Node = raw.declaration;
+    if (
+      raw.kind === "function" &&
+      ts.isVariableDeclaration(raw.declaration) &&
+      raw.declaration.initializer
+    ) {
+      const unwrapped = unwrapParens(ts, raw.declaration.initializer);
+      if (ts.isArrowFunction(unwrapped) || ts.isFunctionExpression(unwrapped)) {
+        target = unwrapped;
+      }
+    }
+    const sig = checker.getSignatureFromDeclaration(
+      target as bundledTs.SignatureDeclaration,
+    );
+    if (sig) {
+      const rendered = checker.signatureToString(
+        sig,
+        undefined,
+        ts.TypeFormatFlags.NoTruncation,
+      );
+      return collapseSignature(`${raw.name}${rendered}`);
+    }
+  } catch {
+    // fall through to the unknown-signature fallback below
+  }
+  // Never throw: some signatures cannot be computed by the checker.
+  return "(unknown signature)";
+}
+
+export interface IndexedSymbol extends RawSymbol {
+  symbol_id: string;
+  signature: string;
+}
+
+export interface SymbolIndex {
+  project: ProjectIndex;
+  symbols: readonly IndexedSymbol[];
+  getById(id: string): IndexedSymbol | undefined;
+  all(): readonly IndexedSymbol[];
+  findEnclosing(file: string, offset: number): IndexedSymbol | undefined;
+}
+
+export function toSummary(sym: IndexedSymbol): SymbolSummary {
+  return {
+    symbol_id: sym.symbol_id,
+    name: sym.name,
+    kind: sym.kind,
+    file: sym.file,
+    line: sym.line,
+    exported: sym.exported,
+    is_test: sym.is_test,
+    signature: sym.signature,
+    doc_summary: sym.doc_summary,
+  };
+}
+
+export function buildIndex(project: ProjectIndex): SymbolIndex {
+  const ts = project.ts;
+  const checker = project.program.getTypeChecker();
+  const raws = extractSymbols(project);
+  const byId = new Map<string, IndexedSymbol>();
+  const symbols: IndexedSymbol[] = raws.map((raw, i) => {
+    const sym: IndexedSymbol = {
+      ...raw,
+      symbol_id: `s_${i + 1}`,
+      signature: signatureFor(ts, checker, raw),
+    };
+    byId.set(sym.symbol_id, sym);
+    return sym;
+  });
+  const validId = (id: string): boolean => {
+    const m = /^s_([1-9][0-9]*)$/.exec(id);
+    if (!m) return false;
+    const n = Number(m[1]);
+    return n >= 1 && n <= symbols.length;
+  };
+  return {
+    project,
+    symbols,
+    getById(id: string): IndexedSymbol | undefined {
+      if (!validId(id)) return undefined;
+      return byId.get(id);
+    },
+    all(): readonly IndexedSymbol[] {
+      return symbols;
+    },
+    findEnclosing(file: string, offset: number): IndexedSymbol | undefined {
+      let best: IndexedSymbol | undefined;
+      for (const sym of symbols) {
+        if (sym.file !== file) continue;
+        if (offset < sym.startOffset || offset >= sym.endOffset) continue;
+        if (
+          !best ||
+          sym.startOffset > best.startOffset ||
+          (sym.startOffset === best.startOffset &&
+            sym.endOffset < best.endOffset)
+        ) {
+          best = sym;
+        }
+      }
+      return best;
+    },
+  };
+}

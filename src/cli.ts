@@ -1,5 +1,5 @@
 import path from "node:path";
-import { buildProject, extractSymbols, toForwardSlashes } from "./index.js";
+import { buildIndex, buildProject, toForwardSlashes } from "./index.js";
 
 function getFlag(args: string[], name: string): string | undefined {
   const idx = args.indexOf(name);
@@ -24,6 +24,7 @@ if (command === "stats") {
   const root = path.resolve(getFlag(rest, "--root") ?? ".");
   const tsconfig = getFlag(rest, "--tsconfig");
   const project = buildProject(root, tsconfig ? { tsconfig } : undefined);
+  const index = buildIndex(project);
   console.log(`TypeScript: ${project.tsVersion} (${project.tsSource})`);
   console.log(
     `tsconfig: ${
@@ -65,10 +66,26 @@ if (command === "stats") {
       console.log(`  ${name}: ${count}`);
     }
   }
+  console.log("symbols:");
+  const all = index.all();
+  const byKind: Record<string, number> = {};
+  let nonTest = 0;
+  let testCount = 0;
+  for (const s of all) {
+    byKind[s.kind] = (byKind[s.kind] ?? 0) + 1;
+    if (s.is_test) testCount++;
+    else nonTest++;
+  }
+  for (const kind of ["function", "method", "class", "interface", "type", "const"]) {
+    console.log(`  ${kind}: ${byKind[kind] ?? 0}`);
+  }
+  console.log(`  non-test: ${nonTest}  test: ${testCount}`);
   if (hasFlag(rest, "--symbols")) {
-    for (const s of extractSymbols(project)) {
+    for (const s of index.all()) {
       const tags = `${s.exported ? "  [exported]" : ""}${s.is_test ? "  [test]" : ""}`;
-      console.log(`${s.file}:${s.line}  ${s.kind}  ${s.name}${tags}`);
+      console.log(
+        `${s.symbol_id}  ${s.file}:${s.line}  ${s.kind}  ${s.name}${tags}  ${s.signature}`,
+      );
     }
   }
 } else {

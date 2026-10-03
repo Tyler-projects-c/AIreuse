@@ -67,3 +67,14 @@ get_signature in {symbol_id, compare_to?:symbol_id}
 - is_test: path has a segment equal to __tests__, test, or tests, OR the file name matches /\.(test|spec)\./.
 - Symbols are ordered by (file path, start offset), where start offset is the start of the declaration node
   excluding leading JSDoc. Compare file paths with plain string < and >, not localeCompare.
+
+## Amendments (Task 3b)
+- signature (SymbolSummary) is a single line, whitespace runs collapsed to one space, max 300 chars; if longer,
+  cut to 297 chars and append "..." (total 300).
+- Formats: function/method/function-valued const -> "<name><checker signature>" e.g. "add(a: number, b?: number): number"
+  (methods use their full "Class.method" name); class -> "class Name"; interface -> "interface Name";
+  type alias -> "type Name = <source text of the type node>"; other const -> "const name: <checker type string>".
+- Overloaded functions use the signature of their first declaration.
+- findEnclosing(file, offset) returns the innermost indexed symbol whose [startOffset, endOffset) contains offset,
+  or undefined. Methods are inside their class, so a method wins over its class.
+
