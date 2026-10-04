@@ -94,3 +94,25 @@ get_signature in {symbol_id, compare_to?:symbol_id}
   serialized cap. When cutting for size, remove results from the end.
 - path_prefix must be repo-relative: reject (INVALID_ARGS) if it is absolute, starts with a drive letter, or
   contains ".." segments. Normalize backslashes to forward slashes and strip a leading "./".
+
+## Amendments (Task 5)
+- body = the exact source text of the symbol's rangeNode (variables: the whole VariableStatement; methods: the method;
+  classes: the whole class), from the node start (excluding leading JSDoc) to its end. Line endings normalized to "\n".
+- range.start_line / end_line are 1-based and inclusive; line_count = number of lines of the full body before truncation.
+- Truncation: keep the first max_lines lines (body_truncated = true if there were more). Then redact. Then if the
+  serialized envelope exceeds 6144 bytes, cut whole lines from the end (and if a single line is still too long, cut
+  characters) until it fits, setting body_truncated = true.
+- Redaction (applied to the body after truncation to max_lines): replace with [REDACTED] (a) AKIA[0-9A-Z]{16},
+  (b) ghp_[A-Za-z0-9]{20,}, (c) sk-[A-Za-z0-9]{20,} anywhere in the text, and (d) the whole content of any
+  single-line '...', "..." or `...` string literal whose content is 40+ characters from [A-Za-z0-9+/=] only.
+  Known limitation: rule (d) can redact long path-like strings; that is acceptable.
+- imports_used: resolved with the type checker, not text matching. For every identifier inside the symbol's rangeNode,
+  look up checker.getSymbolAtLocation; if the symbol's declaration is an import specifier, default import clause,
+  or namespace import, record it under the import declaration's module specifier text as written. names = the local
+  binding names used, unique and sorted ascending; modules sorted ascending. Computed over the whole symbol, not only
+  the displayed lines. Property names (obj.helper) and shadowed locals do not count.
+  module = the specifier text as written, without quotes.
+- deprecated = the symbol's JSDoc has a @deprecated tag (use symbol.getJsDocTags(checker); fall back to the
+  declaration's/statement's jsDoc property).
+- in_current_diff is always false for now. Unknown id -> UNKNOWN_SYMBOL; malformed id -> INVALID_ARGS.
+- get_definition works for test symbols too (is_test only hides them from search by default).

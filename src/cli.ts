@@ -2,16 +2,17 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 import { buildIndex, buildProject, toForwardSlashes } from "./index.js";
 import type { ProjectIndex, SymbolIndex } from "./index.js";
-import type { SearchSymbolsOutput } from "./schemas.js";
+import type { GetDefinitionOutput, SearchSymbolsOutput } from "./schemas.js";
 import { createTools } from "./tools.js";
 
 function printUsage(): void {
   console.log("Usage: cli <command> [flags]");
-  console.log("Commands: stats, search <query...>");
-  console.log("Flags: --root <dir>  --tsconfig <path>");
+  console.log("Commands: stats, search <query...>, def <symbol_id>");
+  console.log("Flags: --root <dir>  --tsconfig <path>  --json  --symbols");
   console.log(
-    "       --symbols  --json  --kind <kind>  --path-prefix <p>  --include-tests  --limit <n>",
+    "       --kind <kind>  --path-prefix <p>  --include-tests  --limit <n>",
   );
+  console.log("       --max-lines <n>   (def)");
 }
 
 function printStats(
@@ -91,8 +92,6 @@ function printStats(
   }
 }
 
-// __MAIN__
-
 function main(): void {
   let parsedArgs;
   try {
@@ -106,6 +105,7 @@ function main(): void {
         "path-prefix": { type: "string" },
         "include-tests": { type: "boolean" },
         limit: { type: "string" },
+        "max-lines": { type: "string" },
         symbols: { type: "boolean" },
       },
       allowPositionals: true,
@@ -158,12 +158,61 @@ function main(): void {
       return;
     }
     const data = envelope.data as SearchSymbolsOutput;
+    if (data.results.length === 0) {
+      console.log("(no results)");
+      return;
+    }
     for (const r of data.results) {
       console.log(
         `${r.symbol_id}  ${r.kind}  ${r.name}  ${r.file}:${r.line}  ${r.signature}`,
       );
     }
     if (data.truncated) console.log("(truncated)");
+    return;
+  }
+
+  if (command === "def") {
+    const project = buildProject(root, buildOpts);
+    const index = buildIndex(project);
+    const tools = createTools(index);
+    const input: Record<string, unknown> = {};
+    if (positionals[1] !== undefined) input.symbol_id = positionals[1];
+    if (values["max-lines"] !== undefined) {
+      input.max_lines = Number(values["max-lines"]);
+    }
+    const envelope = tools.get_definition(input);
+    const asJson = values.json === true;
+    if (!envelope.ok) {
+      if (asJson) {
+        console.log(JSON.stringify(envelope));
+      } else {
+        console.error(`error: ${envelope.error.code}: ${envelope.error.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+    if (asJson) {
+      console.log(JSON.stringify(envelope));
+      return;
+    }
+    const data = envelope.data as GetDefinitionOutput;
+    const tags = `${data.symbol.exported ? "  [exported]" : ""}${
+      data.deprecated ? "  [deprecated]" : ""
+    }`;
+    console.log(
+      `${data.symbol.symbol_id}  ${data.symbol.kind}  ${data.symbol.name}  ` +
+        `${data.symbol.file}:${data.range.start_line}-${data.range.end_line}${tags}`,
+    );
+    console.log(data.symbol.signature);
+    for (const imp of data.imports_used) {
+      console.log(`import ${imp.module}: ${imp.names.join(", ")}`);
+    }
+    console.log("");
+    console.log(data.body);
+    if (data.body_truncated) {
+      const shown = data.body.split("\n").length;
+      console.log(`(truncated: showing ${shown} of ${data.line_count} lines)`);
+    }
     return;
   }
 

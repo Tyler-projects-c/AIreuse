@@ -1,18 +1,35 @@
 import type { IndexedSymbol, SymbolIndex } from "./index.js";
+import path from "node:path";
 import { toForwardSlashes, toSummary } from "./index.js";
 import {
+  GetDefinitionInputSchema,
+  GetDefinitionOutputSchema,
   SearchSymbolsInputSchema,
   SearchSymbolsOutputSchema,
   err,
   ok,
 } from "./schemas.js";
 import type {
+  GetDefinitionOutput,
   MatchSource,
   ResultEnvelope,
   SymbolSummary,
 } from "./schemas.js";
 
 const MAX_RESULT_BYTES = 6144;
+
+/**
+ * Shared INVALID_ARGS envelope built from a failed input schema parse.
+ * Message is "<first issue path>: <message>", capped at 200 chars.
+ */
+function invalidArgs(inputError: {
+  issues: readonly { path: (string | number)[]; message: string }[];
+}): ResultEnvelope {
+  const issue = inputError.issues[0];
+  const where = issue && issue.path.length > 0 ? issue.path.join(".") : "input";
+  const message = `${where}: ${issue ? issue.message : "invalid input"}`;
+  return err("INVALID_ARGS", message.slice(0, 200));
+}
 
 /** Split on non-alphanumerics and camelCase boundaries; lowercase; drop empties. */
 function tokenize(text: string): Set<string> {
@@ -57,6 +74,148 @@ function normalizePathPrefix(raw: string): string | null {
   return stripped;
 }
 
+const REDACTED = "[REDACTED]";
+const BASE64_ONLY = /^[A-Za-z0-9+/=]{40,}$/;
+
+/** Redact secret-looking text. Applied after the max_lines cut. */
+function redactSecrets(text: string): string {
+  let out = text;
+  // (d) whole content of a single-line string literal that is pure 40+ base64 chars.
+  out = out.replace(/'([^'\n]*)'|"([^"\n]*)"|`([^`\n]*)`/g, (match) => {
+    const quote = match.charAt(0);
+    const content = match.slice(1, -1);
+    if (BASE64_ONLY.test(content)) return `${quote}${REDACTED}${quote}`;
+    return match;
+  });
+  // (a) (b) (c) anywhere in the text.
+  out = out.replace(/AKIA[0-9A-Z]{16}/g, REDACTED);
+  out = out.replace(/ghp_[A-Za-z0-9]{20,}/g, REDACTED);
+  out = out.replace(/sk-[A-Za-z0-9]{20,}/g, REDACTED);
+  return out;
+}
+
+/** Walk up from an import declaration part to the enclosing ImportDeclaration. */
+function moduleSpecifierOf(
+  ts: typeof import("typescript"),
+  node: import("typescript").Node | undefined,
+): import("typescript").Expression | undefined {
+  let current = node;
+  while (current) {
+    if (ts.isImportDeclaration(current)) return current.moduleSpecifier;
+    current = current.parent;
+  }
+  return undefined;
+}
+
+function localBindingName(
+  ts: typeof import("typescript"),
+  decl: import("typescript").Node,
+): string | undefined {
+  if (ts.isImportClause(decl)) return decl.name?.text;
+  if (ts.isNamespaceImport(decl)) return decl.name.text;
+  if (ts.isImportSpecifier(decl)) return decl.name.text;
+  return undefined;
+}
+
+/**
+ * Imports used by a symbol, via the type checker (never text matching).
+ * Modules sorted ascending; names unique and sorted ascending.
+ */
+function collectImportsUsed(
+  ts: typeof import("typescript"),
+  checker: import("typescript").TypeChecker,
+  rangeNode: import("typescript").Node,
+): { module: string; names: string[] }[] {
+  const byModule = new Map<string, Set<string>>();
+
+  const record = (id: import("typescript").Node): void => {
+    const symbol = checker.getSymbolAtLocation(id);
+    if (!symbol) return;
+    for (const decl of symbol.declarations ?? []) {
+      if (
+        !ts.isImportSpecifier(decl) &&
+        !ts.isImportClause(decl) &&
+        !ts.isNamespaceImport(decl)
+      ) {
+        continue;
+      }
+      const specifier = moduleSpecifierOf(ts, decl);
+      // Only string literal specifiers are recorded; others are skipped.
+      if (!specifier || !ts.isStringLiteral(specifier)) continue;
+      const local = localBindingName(ts, decl);
+      if (local === undefined) continue;
+      let names = byModule.get(specifier.text);
+      if (!names) {
+        names = new Set<string>();
+        byModule.set(specifier.text, names);
+      }
+      names.add(local);
+    }
+  };
+
+  const visit = (node: import("typescript").Node): void => {
+    // Property names (obj.helper) and qualified-name right sides are not bindings.
+    if (ts.isPropertyAccessExpression(node)) {
+      visit(node.expression);
+      return;
+    }
+    if (ts.isQualifiedName(node)) {
+      visit(node.left);
+      return;
+    }
+    if (ts.isIdentifier(node)) {
+      record(node);
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+
+  visit(rangeNode);
+
+  return [...byModule.entries()]
+    .map(([module, names]) => ({ module, names: [...names].sort() }))
+    .sort((a, b) => (a.module < b.module ? -1 : a.module > b.module ? 1 : 0));
+}
+
+/** True when the symbol's JSDoc carries a @deprecated tag. */
+function isDeprecated(
+  ts: typeof import("typescript"),
+  checker: import("typescript").TypeChecker,
+  sym: IndexedSymbol,
+): boolean {
+  try {
+    const decl = sym.declaration as { name?: import("typescript").Node };
+    if (decl.name) {
+      const symbol = checker.getSymbolAtLocation(decl.name);
+      if (symbol) {
+        const tags = symbol.getJsDocTags(checker);
+        if (tags.some((t) => t.name.toLowerCase() === "deprecated")) return true;
+      }
+    }
+  } catch {
+    // Fall back to the jsDoc property below.
+  }
+  for (const node of [sym.declaration, sym.rangeNode]) {
+    const jsDocs = (node as { jsDoc?: unknown }).jsDoc;
+    if (!Array.isArray(jsDocs)) continue;
+    for (const doc of jsDocs) {
+      const tags = (doc as { tags?: unknown }).tags;
+      if (!Array.isArray(tags)) continue;
+      for (const tag of tags) {
+        const tagName = (tag as { tagName?: { text?: string } }).tagName;
+        if (
+          tagName &&
+          typeof tagName.text === "string" &&
+          tagName.text.toLowerCase() === "deprecated"
+        ) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 export function createTools(index: SymbolIndex): {
   search_symbols(input: unknown): ResultEnvelope;
   get_definition(input: unknown): ResultEnvelope;
@@ -81,13 +240,7 @@ export function createTools(index: SymbolIndex): {
 
   function search_symbols(input: unknown): ResultEnvelope {
     const parsed = SearchSymbolsInputSchema.safeParse(input);
-    if (!parsed.success) {
-      const issue = parsed.error.issues[0];
-      const where =
-        issue && issue.path.length > 0 ? issue.path.join(".") : "input";
-      const message = `${where}: ${issue ? issue.message : "invalid input"}`;
-      return err("INVALID_ARGS", message.slice(0, 200));
-    }
+    if (!parsed.success) return invalidArgs(parsed.error);
     const args = parsed.data;
     let prefix: string | null = null;
     if (args.path_prefix !== undefined) {
@@ -154,13 +307,115 @@ export function createTools(index: SymbolIndex): {
     return ok(data);
   }
 
+  function get_definition(input: unknown): ResultEnvelope {
+    const parsed = GetDefinitionInputSchema.safeParse(input);
+    if (!parsed.success) return invalidArgs(parsed.error);
+    const args = parsed.data;
+    const sym = index.getById(args.symbol_id);
+    if (!sym) {
+      return err("UNKNOWN_SYMBOL", `unknown symbol_id: ${args.symbol_id}`);
+    }
+    const project = index.project;
+    const ts = project.ts;
+    const checker = project.program.getTypeChecker();
+
+    let sourceFile: import("typescript").SourceFile | undefined;
+    try {
+      sourceFile = sym.rangeNode.getSourceFile();
+    } catch {
+      sourceFile = undefined;
+    }
+    if (!sourceFile || !ts.isSourceFile(sourceFile)) {
+      sourceFile = project.program.getSourceFile(
+        path.join(project.root, sym.file),
+      );
+    }
+    if (!sourceFile) {
+      return err("UNKNOWN_SYMBOL", `source file not found: ${sym.file}`);
+    }
+
+    let startPos = sym.rangeNode.getStart(sourceFile, false);
+    const endPos = sym.rangeNode.getEnd();
+    // Include the declaration's own leading indentation, but never a
+    // preceding newline or JSDoc/comment (getStart already skipped those).
+    while (
+      startPos > 0 &&
+      sourceFile.text[startPos - 1] !== "\n" &&
+      sourceFile.text[startPos - 1] !== "\r" &&
+      /\s/.test(sourceFile.text[startPos - 1] as string)
+    ) {
+      startPos--;
+    }
+    const normalized = sourceFile.text
+      .slice(startPos, endPos)
+      .replace(/\r\n/g, "\n")
+      .replace(/\r/g, "\n");
+    const fullLines = normalized.split("\n");
+    const lineCount = fullLines.length;
+    const startLine = sourceFile.getLineAndCharacterOfPosition(startPos).line + 1;
+    const endLine =
+      sourceFile.getLineAndCharacterOfPosition(
+        Math.max(startPos, endPos - 1),
+      ).line + 1;
+
+    const summary = toSummary(sym);
+    const deprecated = isDeprecated(ts, checker, sym);
+    // Imports are computed over the whole symbol, not just the shown lines.
+    const importsUsed = collectImportsUsed(ts, checker, sym.rangeNode);
+
+    let truncated = fullLines.length > args.max_lines;
+    let bodyLines = redactSecrets(
+      fullLines.slice(0, args.max_lines).join("\n"),
+    ).split("\n");
+    let body = bodyLines.join("\n");
+
+    const makeData = (text: string): GetDefinitionOutput => ({
+      symbol: summary,
+      range: { start_line: startLine, end_line: endLine },
+      body: text,
+      body_truncated: truncated,
+      line_count: lineCount,
+      imports_used: importsUsed,
+      in_current_diff: false,
+      deprecated,
+    });
+    const fits = (text: string): boolean =>
+      Buffer.byteLength(JSON.stringify(ok(makeData(text))), "utf8") <=
+      MAX_RESULT_BYTES;
+
+    while (!fits(body)) {
+      if (bodyLines.length > 1) {
+        bodyLines.pop();
+        truncated = true;
+        body = bodyLines.join("\n");
+        continue;
+      }
+      const line = bodyLines[0] ?? "";
+      if (line.length === 0) break;
+      let lo = 0;
+      let hi = line.length;
+      while (lo < hi) {
+        const mid = Math.floor((lo + hi + 1) / 2);
+        if (fits(line.slice(0, mid))) lo = mid;
+        else hi = mid - 1;
+      }
+      if (lo >= line.length) break;
+      bodyLines[0] = line.slice(0, lo);
+      body = bodyLines[0];
+      truncated = true;
+    }
+
+    // parse() throws only for programmer errors; bad input is handled above.
+    return ok(GetDefinitionOutputSchema.parse(makeData(body)));
+  }
+
   // The remaining tools are not implemented yet; they must never throw.
   const notImplemented = (): ResultEnvelope =>
     err("INVALID_ARGS", "not implemented");
 
   return {
     search_symbols,
-    get_definition: notImplemented,
+    get_definition,
     get_references: notImplemented,
     get_signature: notImplemented,
   };
