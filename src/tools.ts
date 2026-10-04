@@ -2,14 +2,18 @@ import type { IndexedSymbol, SymbolIndex } from "./index.js";
 import path from "node:path";
 import {
   getCallable,
+  isTestPath,
   redactSecrets,
   scrubPaths,
   toForwardSlashes,
+  toRepoRelative,
   toSummary,
 } from "./index.js";
 import {
   GetDefinitionInputSchema,
   GetDefinitionOutputSchema,
+  GetReferencesInputSchema,
+  GetReferencesOutputSchema,
   GetSignatureInputSchema,
   GetSignatureOutputSchema,
   SearchSymbolsInputSchema,
@@ -19,8 +23,10 @@ import {
 } from "./schemas.js";
 import type {
   GetDefinitionOutput,
+  GetReferencesOutput,
   GetSignatureOutput,
   MatchSource,
+  ReferenceKind,
   ResultEnvelope,
   SignatureCompat,
   SymbolSummary,
@@ -105,6 +111,96 @@ function localBindingName(
   if (ts.isNamespaceImport(decl)) return decl.name.text;
   if (ts.isImportSpecifier(decl)) return decl.name.text;
   return undefined;
+}
+
+/** Deepest node whose text spans `position` (mirrors getTokenAtPosition). */
+function deepestNodeAt(
+  root: import("typescript").Node,
+  position: number,
+): import("typescript").Node {
+  let current = root;
+  for (;;) {
+    let next: import("typescript").Node | undefined;
+    current.forEachChild((child) => {
+      if (
+        next === undefined &&
+        child.getFullStart() <= position &&
+        child.getEnd() > position
+      ) {
+        next = child;
+      }
+      return undefined;
+    });
+    if (!next) return current;
+    current = next;
+  }
+}
+
+/** True when `node` sits inside an import/export specifier or declaration. */
+function isImportLikeNode(
+  ts: typeof import("typescript"),
+  node: import("typescript").Node,
+): boolean {
+  for (let n: import("typescript").Node | undefined = node; n; n = n.parent) {
+    if (
+      ts.isImportSpecifier(n) ||
+      ts.isImportClause(n) ||
+      ts.isNamespaceImport(n) ||
+      ts.isExportSpecifier(n) ||
+      ts.isImportDeclaration(n) ||
+      ts.isExportDeclaration(n)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** True when `node` is (part of) the callee of a call or new expression. */
+function isCallTargetNode(
+  ts: typeof import("typescript"),
+  node: import("typescript").Node,
+): boolean {
+  let child: import("typescript").Node = node;
+  for (
+    let n: import("typescript").Node | undefined = node.parent;
+    n;
+    child = n, n = n.parent
+  ) {
+    if (
+      (ts.isCallExpression(n) || ts.isNewExpression(n)) &&
+      n.expression === child
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** True when any ancestor of `node` is a type node. */
+function isTypePositionNode(
+  ts: typeof import("typescript"),
+  node: import("typescript").Node,
+): boolean {
+  for (
+    let n: import("typescript").Node | undefined = node.parent;
+    n;
+    n = n.parent
+  ) {
+    if (ts.isTypeNode(n)) return true;
+  }
+  return false;
+}
+
+/** SPEC order: import, then call, then type_use, else other. */
+function classifyReference(
+  ts: typeof import("typescript"),
+  node: import("typescript").Node,
+): ReferenceKind {
+  if (isImportLikeNode(ts, node)) return "import";
+  if (isCallTargetNode(ts, node)) return "call";
+  if (isTypePositionNode(ts, node)) return "type_use";
+  return "other";
 }
 
 /**
@@ -274,8 +370,9 @@ function describeCallable(
       raw = undefined;
     }
     params.push({
-      // Source text of the name node, so a destructured param reads "{ a, b }".
-      name: collapseWs(vd.name.getText()).slice(0, 60),
+      // Source text, so a destructured param reads "{ a, b }". Redaction runs
+      // BEFORE the 60-char cut so a cut can never leave half a secret.
+      name: collapseWs(redactSecrets(vd.name.getText())).slice(0, 60),
       type:
         raw === undefined
           ? ""
@@ -675,14 +772,157 @@ export function createTools(index: SymbolIndex): {
     return ok(valid);
   }
 
-  // The remaining tool is not implemented yet; it must never throw.
-  const notImplemented = (): ResultEnvelope =>
-    err("INVALID_ARGS", "not implemented");
+  function get_references(input: unknown): ResultEnvelope {
+    const parsed = GetReferencesInputSchema.safeParse(input);
+    if (!parsed.success) return invalidArgs(parsed.error);
+    const args = parsed.data;
+
+    const sym = index.getById(args.symbol_id);
+    if (!sym) {
+      return err("UNKNOWN_SYMBOL", `unknown symbol_id: ${args.symbol_id}`);
+    }
+    const project = index.project;
+    const ts = project.ts;
+
+    let declFile: import("typescript").SourceFile | undefined;
+    try {
+      declFile = sym.rangeNode.getSourceFile();
+    } catch {
+      declFile = undefined;
+    }
+    if (!declFile) {
+      declFile = project.program.getSourceFile(
+        path.join(project.root, sym.file),
+      );
+    }
+    if (!declFile) {
+      return err("UNKNOWN_SYMBOL", `source file not found: ${sym.file}`);
+    }
+
+    let groups: readonly import("typescript").ReferencedSymbol[] = [];
+    try {
+      groups =
+        project.service.findReferences(declFile.fileName, sym.nameOffset) ??
+        [];
+    } catch {
+      groups = [];
+    }
+
+    const kindFilter =
+      args.kinds !== undefined ? new Set<string>(args.kinds) : null;
+
+    interface Found {
+      file: string;
+      line: number;
+      offset: number;
+      kind: ReferenceKind;
+      enclosingId: string | null;
+      context: string;
+    }
+
+    const seen = new Set<string>();
+    const found: Found[] = [];
+    for (const group of groups) {
+      for (const entry of group.references) {
+        // The symbol's own declaration is never a reference. Import
+        // specifiers arrive as separate alias groups and stay, since they
+        // are real "import" references.
+        if (
+          entry.isDefinition === true ||
+          (entry.fileName === declFile.fileName &&
+            entry.textSpan.start === sym.nameOffset)
+        ) {
+          continue;
+        }
+        const key =
+          `${entry.fileName}:${entry.textSpan.start}:${entry.textSpan.length}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        const relFile = toForwardSlashes(
+          toRepoRelative(project.root, entry.fileName),
+        );
+        // A reference outside the repo root (e.g. a linked lib) is skipped.
+        if (relFile.startsWith("..") || path.isAbsolute(relFile)) continue;
+        if (!args.include_tests && isTestPath(relFile)) continue;
+
+        const sourceFile = project.program.getSourceFile(entry.fileName);
+        if (!sourceFile) continue;
+
+        const node = deepestNodeAt(sourceFile, entry.textSpan.start);
+        const kind = classifyReference(ts, node);
+        if (kindFilter !== null && !kindFilter.has(kind)) continue;
+
+        const lc = sourceFile.getLineAndCharacterOfPosition(
+          entry.textSpan.start,
+        );
+        const starts = sourceFile.getLineStarts();
+        const lineStart = starts[lc.line] ?? 0;
+        const lineEnd =
+          lc.line + 1 < starts.length
+            ? (starts[lc.line + 1] as number)
+            : sourceFile.text.length;
+        const trimmed = sourceFile.text.slice(lineStart, lineEnd).trim();
+        const safe = redactSecrets(scrubPaths(trimmed, project.root));
+        const enclosing = index.findEnclosing(relFile, entry.textSpan.start);
+
+        found.push({
+          file: relFile,
+          line: lc.line + 1,
+          offset: entry.textSpan.start,
+          kind,
+          enclosingId: enclosing ? enclosing.symbol_id : null,
+          context: safe.length > 200 ? safe.slice(0, 200) : safe,
+        });
+      }
+    }
+
+    found.sort((a, b) => {
+      if (a.file !== b.file) return a.file < b.file ? -1 : 1;
+      if (a.offset !== b.offset) return a.offset - b.offset;
+      return a.line - b.line;
+    });
+
+    const total = found.length;
+    const counts = new Map<string, number>();
+    for (const f of found) counts.set(f.file, (counts.get(f.file) ?? 0) + 1);
+    const by_file = [...counts.entries()]
+      .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+      .map(([file, count]) => ({ file, count }));
+
+    let references = found.slice(0, args.limit).map((f) => ({
+      file: f.file,
+      line: f.line,
+      kind: f.kind,
+      enclosing_symbol_id: f.enclosingId,
+      context: f.context,
+    }));
+    let truncated = found.length > references.length;
+
+    const build = (): GetReferencesOutput =>
+      GetReferencesOutputSchema.parse({
+        total,
+        by_file,
+        references,
+        truncated,
+      });
+
+    // Trim whole references from the end until the 6 KB cap is met.
+    while (
+      references.length > 0 &&
+      Buffer.byteLength(JSON.stringify(ok(build())), "utf8") > MAX_RESULT_BYTES
+    ) {
+      references = references.slice(0, -1);
+      truncated = true;
+    }
+
+    return ok(build());
+  }
 
   return {
     search_symbols,
     get_definition,
-    get_references: notImplemented,
+    get_references,
     get_signature,
   };
 }

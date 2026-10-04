@@ -4,6 +4,7 @@ import { buildIndex, buildProject, toForwardSlashes } from "./index.js";
 import type { ProjectIndex, SymbolIndex } from "./index.js";
 import type {
   GetDefinitionOutput,
+  GetReferencesOutput,
   GetSignatureOutput,
   SearchSymbolsOutput,
 } from "./schemas.js";
@@ -12,13 +13,14 @@ import { createTools } from "./tools.js";
 function printUsage(): void {
   console.log("Usage: cli <command> [flags]");
   console.log(
-    "Commands: stats, search <query...>, def <symbol_id>, sig <symbol_id>",
+    "Commands: stats, search <query...>, def <symbol_id>, refs <symbol_id>, sig <symbol_id>",
   );
   console.log("Flags: --root <dir>  --tsconfig <path>  --json  --symbols");
   console.log(
     "       --kind <kind>  --path-prefix <p>  --include-tests  --limit <n>",
   );
   console.log("       --max-lines <n>   (def)");
+  console.log("       --kinds <call,import,type_use,other>   (refs)");
   console.log("       --compare-to <symbol_id>   (sig)");
 }
 
@@ -114,6 +116,7 @@ function main(): void {
         limit: { type: "string" },
         "max-lines": { type: "string" },
         "compare-to": { type: "string" },
+        kinds: { type: "string" },
         symbols: { type: "boolean" },
       },
       allowPositionals: true,
@@ -274,6 +277,47 @@ function main(): void {
           `return_assignable=${data.compat.return_assignable} ` +
           `async_match=${data.compat.async_match}`,
       );
+    }
+    return;
+  }
+
+  if (command === "refs") {
+    const project = buildProject(root, buildOpts);
+    const index = buildIndex(project);
+    const tools = createTools(index);
+    const input: Record<string, unknown> = {};
+    const symbolId = positionals[1];
+    if (symbolId !== undefined) input.symbol_id = symbolId;
+    if (values.kinds !== undefined) {
+      input.kinds = values.kinds
+        .split(",")
+        .map((k) => k.trim())
+        .filter((k) => k.length > 0);
+    }
+    if (values["include-tests"] === true) input.include_tests = true;
+    if (values.limit !== undefined) input.limit = Number(values.limit);
+    const envelope = tools.get_references(input);
+    const asJson = values.json === true;
+    if (!envelope.ok) {
+      if (asJson) {
+        console.log(JSON.stringify(envelope));
+      } else {
+        console.error(`error: ${envelope.error.code}: ${envelope.error.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+    if (asJson) {
+      console.log(JSON.stringify(envelope));
+      return;
+    }
+    const data = envelope.data as GetReferencesOutput;
+    console.log(
+      `${data.total} reference(s)${data.truncated ? " (truncated)" : ""}`,
+    );
+    for (const r of data.references) {
+      const owner = r.enclosing_symbol_id ? `  [in ${r.enclosing_symbol_id}]` : "";
+      console.log(`${r.file}:${r.line}  ${r.kind}${owner}  ${r.context}`);
     }
     return;
   }

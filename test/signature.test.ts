@@ -8,6 +8,9 @@ import { makeTempProject } from "./helpers.js";
 
 // Built dynamically so this test source contains no token-shaped literal.
 const AKIA_SECRET = "AKIA" + "0123456789ABCDEF";
+// Redaction runs before the 60-char param-name cut, so a secret inside a
+// destructured default survives as "[REDACTED]" instead of a raw token.
+const SECRET_DEFAULT = "AKIA" + "AAAAAAAAAAAAAAAA";
 
 // ~190 chars per type: 60 of them blow the 6 KB envelope cap.
 const LONG_TYPE =
@@ -61,6 +64,7 @@ const A_SRC = [
   "export function overloaded(a: number): number;",
   "export function overloaded(a: string): string { return a; }",
   "",
+  `export function destructSecret({ key = "${SECRET_DEFAULT}" }: { key?: string } = {}): string { return key; }`,
   `export function withLiteral(k: "${AKIA_SECRET}"): void {}`,
   "export function useNs(m: typeof b): void {}",
   "",
@@ -439,5 +443,18 @@ describe("get_signature", () => {
     const first = callSig({ symbol_id: idOf("plain") });
     const second = callSig({ symbol_id: idOf("plain") });
     expect(second).toEqual(first);
+  });
+
+  it("redacts names of destructured parameters with secret defaults", () => {
+    // The runtime source reads `{ key = "AKIA" + "AAAAAAAAAAAAAAAA" }`,
+    // i.e. a destructured param whose default is the secret token.
+    const expectedSecret = "AKIA" + "AAAAAAAAAAAAAAAA";
+    const secretParam = sig("destructSecret");
+    expect(secretParam.params).toHaveLength(1);
+    expect(secretParam.params[0].name).toContain("[REDACTED]");
+    expect(secretParam.params[0].name.length).toBeLessThanOrEqual(60);
+    expect(secretParam.params[0].optional).toBe(true);
+    const serialized = JSON.stringify(secretParam);
+    expect(serialized).not.toContain(expectedSecret);
   });
 });
