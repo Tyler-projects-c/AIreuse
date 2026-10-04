@@ -123,3 +123,27 @@ get_signature in {symbol_id, compare_to?:symbol_id}
   signature, doc_summary, and body now, and type strings and reference context in later tasks.
 - Redaction runs BEFORE a string is cut to its length cap, so a cut can never leave half a secret.
 - imports_used also counts shorthand properties: in `{ helper }` the import `helper` is used.
+## Amendments (Task 6)
+- Callable symbols are kind function or method (function-valued consts have kind function). Any other symbol ->
+  INVALID_ARGS "symbol has no call signature". Unknown symbol_id or compare_to -> UNKNOWN_SYMBOL.
+- name = the symbol name ("Class.method" for methods). Overloads use the first declaration.
+- type_signature = the same text as SymbolSummary.signature but without the 300-char cut.
+- params, in order, excluding `this`: name = source text of the parameter's name node (so destructured params read
+  like "{ a, b }"), whitespace collapsed, max 60 chars; type = the checker's type string for that parameter;
+  optional = has "?", has an initializer, or is a rest parameter.
+- return_type = the checker's string for the signature's return type (async functions show Promise<T>).
+- type_params = source text of each type parameter node of the declaration (e.g. "T extends object = {}"),
+  collapsed, max 100 chars each; [] if none.
+- is_async = the declaration has the async modifier (not inferred from the return type). exported = symbol.exported.
+- Every string derived from the checker passes scrubPaths -> redactSecrets -> collapse, and each type string is
+  cut to 300 chars AFTER redaction.
+- compat (only when compare_to is given) answers: could callers of A (the symbol) be switched to B (compare_to)?
+    same_param_count: A and B have the same number of parameters (a rest parameter counts as one).
+    params_assignable: false if B has more REQUIRED parameters than A has required parameters, or if A has a
+      parameter at a position where B has none; otherwise true only if A's parameter type at every position is
+      assignable to B's parameter type at that position; "unknown" if either signature has type parameters or a
+      rest parameter, or if checker.isTypeAssignableTo is not available.
+    return_assignable: B's return type is assignable to A's return type; "unknown" under the same conditions.
+    async_match: A.is_async === B.is_async.
+- If the serialized envelope exceeds 6144 bytes, return err("BUDGET_EXCEEDED", "signature too large"). Never silently
+  drop parameters.

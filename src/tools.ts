@@ -1,9 +1,17 @@
 import type { IndexedSymbol, SymbolIndex } from "./index.js";
 import path from "node:path";
-import { redactSecrets, toForwardSlashes, toSummary } from "./index.js";
+import {
+  getCallable,
+  redactSecrets,
+  scrubPaths,
+  toForwardSlashes,
+  toSummary,
+} from "./index.js";
 import {
   GetDefinitionInputSchema,
   GetDefinitionOutputSchema,
+  GetSignatureInputSchema,
+  GetSignatureOutputSchema,
   SearchSymbolsInputSchema,
   SearchSymbolsOutputSchema,
   err,
@@ -11,8 +19,10 @@ import {
 } from "./schemas.js";
 import type {
   GetDefinitionOutput,
+  GetSignatureOutput,
   MatchSource,
   ResultEnvelope,
+  SignatureCompat,
   SymbolSummary,
 } from "./schemas.js";
 
@@ -204,6 +214,206 @@ function isDeprecated(
     }
   }
   return false;
+}
+
+function collapseWs(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * scrubPaths -> redactSecrets -> collapse, then cut to 300 chars. The cut
+ * always happens after redaction so it can never split a secret in half.
+ */
+function sanitizeTypeText(text: string, absRoot: string): string {
+  const cleaned = collapseWs(redactSecrets(scrubPaths(text, absRoot)));
+  return cleaned.length > 300 ? cleaned.slice(0, 300) : cleaned;
+}
+
+type Callable = NonNullable<ReturnType<typeof getCallable>>;
+
+interface ParamInfo {
+  name: string;
+  type: string;
+  optional: boolean;
+  required: boolean;
+  raw: import("typescript").Type | undefined;
+}
+
+interface CallableInfo {
+  params: ParamInfo[];
+  returnType: import("typescript").Type | undefined;
+  returnText: string;
+  typeParams: string[];
+  typeSignature: string;
+  isAsync: boolean;
+  hasTypeParams: boolean;
+  hasRest: boolean;
+}
+
+/** Everything get_signature needs to know about one callable symbol. */
+function describeCallable(
+  ts: typeof import("typescript"),
+  checker: import("typescript").TypeChecker,
+  callable: Callable,
+  sym: IndexedSymbol,
+  absRoot: string,
+): CallableInfo {
+  const params: ParamInfo[] = [];
+  let hasRest = false;
+  for (const p of callable.signature.parameters) {
+    const vd = p.valueDeclaration;
+    if (!vd || !ts.isParameter(vd)) continue;
+    // `this` names the receiver; it is not one of the symbol's parameters.
+    const nameNode = vd.name as import("typescript").Node;
+    if (nameNode.kind === ts.SyntaxKind.ThisKeyword) continue;
+    if (vd.dotDotDotToken !== undefined) hasRest = true;
+    let raw: import("typescript").Type | undefined;
+    try {
+      raw = checker.getTypeOfSymbolAtLocation(p, vd);
+    } catch {
+      raw = undefined;
+    }
+    params.push({
+      // Source text of the name node, so a destructured param reads "{ a, b }".
+      name: collapseWs(vd.name.getText()).slice(0, 60),
+      type:
+        raw === undefined
+          ? ""
+          : sanitizeTypeText(
+              checker.typeToString(
+                raw,
+                undefined,
+                ts.TypeFormatFlags.NoTruncation,
+              ),
+              absRoot,
+            ),
+      optional:
+        vd.questionToken !== undefined ||
+        vd.initializer !== undefined ||
+        vd.dotDotDotToken !== undefined,
+      required:
+        vd.questionToken === undefined &&
+        vd.initializer === undefined &&
+        vd.dotDotDotToken === undefined,
+      raw,
+    });
+  }
+
+  let returnType: import("typescript").Type | undefined;
+  let returnText = "";
+  try {
+    returnType = callable.signature.getReturnType();
+    returnText = sanitizeTypeText(
+      checker.typeToString(
+        returnType,
+        undefined,
+        ts.TypeFormatFlags.NoTruncation,
+      ),
+      absRoot,
+    );
+  } catch {
+    returnType = undefined;
+    returnText = "";
+  }
+
+  const decl = callable.declaration as {
+    typeParameters?: import("typescript").NodeArray<
+      import("typescript").TypeParameterDeclaration
+    >;
+    modifiers?: readonly { kind: import("typescript").SyntaxKind }[];
+  };
+  const typeParams = (decl.typeParameters ?? []).map((tp) =>
+    collapseWs(redactSecrets(tp.getText())).slice(0, 100),
+  );
+  const hasTypeParams =
+    typeParams.length > 0 ||
+    (callable.signature.typeParameters?.length ?? 0) > 0;
+  const isAsync =
+    decl.modifiers !== undefined &&
+    decl.modifiers.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword);
+
+  let typeSignature = "";
+  try {
+    const rendered = checker.signatureToString(
+      callable.signature,
+      undefined,
+      ts.TypeFormatFlags.NoTruncation,
+    );
+    typeSignature = collapseWs(
+      redactSecrets(scrubPaths(`${sym.name}${rendered}`, absRoot)),
+    );
+  } catch {
+    typeSignature = "";
+  }
+
+  return {
+    params,
+    returnType,
+    returnText,
+    typeParams,
+    typeSignature,
+    isAsync,
+    hasTypeParams,
+    hasRest,
+  };
+}
+
+/** Could callers of A be switched to B? "unknown" when undecidable. */
+function compatFor(
+  ts: typeof import("typescript"),
+  checker: import("typescript").TypeChecker,
+  a: CallableInfo,
+  b: CallableInfo,
+): SignatureCompat {
+  const sameParamCount = a.params.length === b.params.length;
+  const undecidable =
+    a.hasTypeParams ||
+    b.hasTypeParams ||
+    a.hasRest ||
+    b.hasRest ||
+    typeof checker.isTypeAssignableTo !== "function" ||
+    a.returnType === undefined ||
+    b.returnType === undefined ||
+    a.params.some((p) => p.raw === undefined) ||
+    b.params.some((p) => p.raw === undefined);
+
+  let paramsAssignable: boolean | "unknown";
+  let returnAssignable: boolean | "unknown";
+  if (undecidable) {
+    paramsAssignable = "unknown";
+    returnAssignable = "unknown";
+  } else {
+    const required = (info: CallableInfo): number =>
+      info.params.filter((p) => p.required).length;
+    if (required(b) > required(a)) {
+      // B demands arguments A's callers never pass.
+      paramsAssignable = false;
+    } else if (a.params.length > b.params.length) {
+      // A has a parameter at a position where B has none at all.
+      paramsAssignable = false;
+    } else {
+      paramsAssignable = a.params.every((p, i) => {
+        const target = b.params[i];
+        return (
+          target !== undefined &&
+          p.raw !== undefined &&
+          target.raw !== undefined &&
+          checker.isTypeAssignableTo(p.raw, target.raw)
+        );
+      });
+    }
+    returnAssignable = checker.isTypeAssignableTo(
+      b.returnType as import("typescript").Type,
+      a.returnType as import("typescript").Type,
+    );
+  }
+
+  return {
+    same_param_count: sameParamCount,
+    params_assignable: paramsAssignable,
+    return_assignable: returnAssignable,
+    async_match: a.isAsync === b.isAsync,
+  };
 }
 
 export function createTools(index: SymbolIndex): {
@@ -399,7 +609,73 @@ export function createTools(index: SymbolIndex): {
     return ok(GetDefinitionOutputSchema.parse(makeData(body)));
   }
 
-  // The remaining tools are not implemented yet; they must never throw.
+  function get_signature(input: unknown): ResultEnvelope {
+    const parsed = GetSignatureInputSchema.safeParse(input);
+    if (!parsed.success) return invalidArgs(parsed.error);
+    const args = parsed.data;
+
+    const project = index.project;
+    const ts = project.ts;
+    const checker = project.program.getTypeChecker();
+
+    const sym = index.getById(args.symbol_id);
+    if (!sym) {
+      return err("UNKNOWN_SYMBOL", `unknown symbol_id: ${args.symbol_id}`);
+    }
+    const callable = getCallable(project, sym);
+    if (!callable) {
+      return err("INVALID_ARGS", "symbol has no call signature");
+    }
+
+    let other: Callable | undefined;
+    let otherSym: IndexedSymbol | undefined;
+    if (args.compare_to !== undefined) {
+      otherSym = index.getById(args.compare_to);
+      if (!otherSym) {
+        return err("UNKNOWN_SYMBOL", `unknown symbol_id: ${args.compare_to}`);
+      }
+      other = getCallable(project, otherSym);
+      if (!other) {
+        return err("INVALID_ARGS", "symbol has no call signature");
+      }
+    }
+
+    const a = describeCallable(ts, checker, callable, sym, project.root);
+    const compat =
+      other !== undefined && otherSym !== undefined
+        ? compatFor(
+            ts,
+            checker,
+            a,
+            describeCallable(ts, checker, other, otherSym, project.root),
+          )
+        : undefined;
+
+    const data: GetSignatureOutput = {
+      name: sym.name,
+      type_signature: a.typeSignature,
+      params: a.params.map((p) => ({
+        name: p.name,
+        type: p.type,
+        optional: p.optional,
+      })),
+      return_type: a.returnText,
+      type_params: a.typeParams,
+      is_async: a.isAsync,
+      exported: sym.exported,
+      ...(compat ? { compat } : {}),
+    };
+
+    // parse() throws only for programmer errors; bad input is handled above.
+    const valid = GetSignatureOutputSchema.parse(data);
+    if (Buffer.byteLength(JSON.stringify(ok(valid)), "utf8") > MAX_RESULT_BYTES) {
+      // Never silently drop parameters: report the budget instead.
+      return err("BUDGET_EXCEEDED", "signature too large");
+    }
+    return ok(valid);
+  }
+
+  // The remaining tool is not implemented yet; it must never throw.
   const notImplemented = (): ResultEnvelope =>
     err("INVALID_ARGS", "not implemented");
 
@@ -407,6 +683,6 @@ export function createTools(index: SymbolIndex): {
     search_symbols,
     get_definition,
     get_references: notImplemented,
-    get_signature: notImplemented,
+    get_signature,
   };
 }

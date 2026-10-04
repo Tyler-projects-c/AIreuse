@@ -750,12 +750,52 @@ function collapseSignature(text: string): string {
   return single;
 }
 
-function signatureFor(
-  ts: typeof bundledTs,
-  checker: bundledTs.TypeChecker,
-  raw: RawSymbol,
-  absRoot: string,
-): string {
+/**
+ * The checker signature behind a callable symbol, plus the declaration the
+ * checker produced it from. Undefined for non-callable kinds (classes,
+ * interfaces, type aliases, non-function consts) and when the checker has no
+ * signature for the declaration.
+ */
+export function getCallable(
+  project: ProjectIndex,
+  sym: IndexedSymbol,
+):
+  | {
+      signature: bundledTs.Signature;
+      declaration: bundledTs.SignatureDeclaration;
+    }
+  | undefined {
+  if (sym.kind !== "function" && sym.kind !== "method") return undefined;
+  const ts = project.ts;
+  const checker = project.program.getTypeChecker();
+  try {
+    // A function-valued const stores its VariableDeclaration, not the arrow.
+    let target: bundledTs.Node = sym.declaration;
+    if (
+      sym.kind === "function" &&
+      ts.isVariableDeclaration(sym.declaration) &&
+      sym.declaration.initializer
+    ) {
+      const unwrapped = unwrapParens(ts, sym.declaration.initializer);
+      if (ts.isArrowFunction(unwrapped) || ts.isFunctionExpression(unwrapped)) {
+        target = unwrapped;
+      }
+    }
+    const declaration = target as bundledTs.SignatureDeclaration;
+    const signature = checker.getSignatureFromDeclaration(declaration);
+    if (!signature) return undefined;
+    return { signature, declaration };
+  } catch {
+    // getSignatureFromDeclaration throws for some node kinds (e.g. classes).
+    return undefined;
+  }
+}
+
+function signatureFor(project: ProjectIndex, sym: IndexedSymbol): string {
+  const ts = project.ts;
+  const checker = project.program.getTypeChecker();
+  const absRoot = project.root;
+  const raw = sym;
   let source: string | null = null;
   try {
     if (raw.kind === "class") {
@@ -776,26 +816,10 @@ function signatureFor(
       source = `const ${raw.name}: ${typeString}`;
     } else {
       // function or method: "<name><checker signature>".
-      let target: bundledTs.Node = raw.declaration;
-      if (
-        raw.kind === "function" &&
-        ts.isVariableDeclaration(raw.declaration) &&
-        raw.declaration.initializer
-      ) {
-        const unwrapped = unwrapParens(ts, raw.declaration.initializer);
-        if (
-          ts.isArrowFunction(unwrapped) ||
-          ts.isFunctionExpression(unwrapped)
-        ) {
-          target = unwrapped;
-        }
-      }
-      const sig = checker.getSignatureFromDeclaration(
-        target as bundledTs.SignatureDeclaration,
-      );
-      if (sig) {
+      const callable = getCallable(project, sym);
+      if (callable) {
         const rendered = checker.signatureToString(
-          sig,
+          callable.signature,
           undefined,
           ts.TypeFormatFlags.NoTruncation,
         );
@@ -841,16 +865,15 @@ export function toSummary(sym: IndexedSymbol): SymbolSummary {
 }
 
 export function buildIndex(project: ProjectIndex): SymbolIndex {
-  const ts = project.ts;
-  const checker = project.program.getTypeChecker();
   const raws = extractSymbols(project);
   const byId = new Map<string, IndexedSymbol>();
   const symbols: IndexedSymbol[] = raws.map((raw, i) => {
     const sym: IndexedSymbol = {
       ...raw,
       symbol_id: `s_${i + 1}`,
-      signature: signatureFor(ts, checker, raw, project.root),
+      signature: "",
     };
+    sym.signature = signatureFor(project, sym);
     byId.set(sym.symbol_id, sym);
     return sym;
   });

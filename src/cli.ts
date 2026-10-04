@@ -2,17 +2,24 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 import { buildIndex, buildProject, toForwardSlashes } from "./index.js";
 import type { ProjectIndex, SymbolIndex } from "./index.js";
-import type { GetDefinitionOutput, SearchSymbolsOutput } from "./schemas.js";
+import type {
+  GetDefinitionOutput,
+  GetSignatureOutput,
+  SearchSymbolsOutput,
+} from "./schemas.js";
 import { createTools } from "./tools.js";
 
 function printUsage(): void {
   console.log("Usage: cli <command> [flags]");
-  console.log("Commands: stats, search <query...>, def <symbol_id>");
+  console.log(
+    "Commands: stats, search <query...>, def <symbol_id>, sig <symbol_id>",
+  );
   console.log("Flags: --root <dir>  --tsconfig <path>  --json  --symbols");
   console.log(
     "       --kind <kind>  --path-prefix <p>  --include-tests  --limit <n>",
   );
   console.log("       --max-lines <n>   (def)");
+  console.log("       --compare-to <symbol_id>   (sig)");
 }
 
 function printStats(
@@ -106,6 +113,7 @@ function main(): void {
         "include-tests": { type: "boolean" },
         limit: { type: "string" },
         "max-lines": { type: "string" },
+        "compare-to": { type: "string" },
         symbols: { type: "boolean" },
       },
       allowPositionals: true,
@@ -212,6 +220,60 @@ function main(): void {
     if (data.body_truncated) {
       const shown = data.body.split("\n").length;
       console.log(`(truncated: showing ${shown} of ${data.line_count} lines)`);
+    }
+    return;
+  }
+
+  if (command === "sig") {
+    const project = buildProject(root, buildOpts);
+    const index = buildIndex(project);
+    const tools = createTools(index);
+    const input: Record<string, unknown> = {};
+    const symbolId = positionals[1];
+    if (symbolId !== undefined) input.symbol_id = symbolId;
+    if (values["compare-to"] !== undefined) {
+      input.compare_to = values["compare-to"];
+    }
+    const envelope = tools.get_signature(input);
+    const asJson = values.json === true;
+    if (!envelope.ok) {
+      if (asJson) {
+        console.log(JSON.stringify(envelope));
+      } else {
+        console.error(`error: ${envelope.error.code}: ${envelope.error.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+    if (asJson) {
+      console.log(JSON.stringify(envelope));
+      return;
+    }
+    const data = envelope.data as GetSignatureOutput;
+    // The tool already validated symbol_id, so this lookup cannot fail.
+    const sym = symbolId !== undefined ? index.getById(symbolId) : undefined;
+    const tags = `${data.exported ? "  [exported]" : ""}${
+      data.is_async ? "  [async]" : ""
+    }`;
+    console.log(
+      `${sym ? sym.symbol_id : "?"}  ${sym ? sym.kind : "?"}  ${data.name}${tags}`,
+    );
+    console.log(data.type_signature);
+    for (const p of data.params) {
+      console.log(`  ${p.name}${p.optional ? "?" : ""}: ${p.type}`);
+    }
+    console.log(`returns: ${data.return_type}`);
+    if (data.type_params.length > 0) {
+      console.log(`type params: ${data.type_params.join(", ")}`);
+    }
+    if (data.compat) {
+      console.log(
+        `compat vs ${values["compare-to"]}: ` +
+          `same_param_count=${data.compat.same_param_count} ` +
+          `params_assignable=${data.compat.params_assignable} ` +
+          `return_assignable=${data.compat.return_assignable} ` +
+          `async_match=${data.compat.async_match}`,
+      );
     }
     return;
   }

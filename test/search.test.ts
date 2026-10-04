@@ -207,7 +207,7 @@ describe("search_symbols", () => {
 
   it("stubs the remaining tools", () => {
     const { tools } = buildFixture();
-    const stubs = [tools.get_references, tools.get_signature];
+    const stubs = [tools.get_references];
     for (const stub of stubs) {
       const env = stub({ symbol_id: "s_1" });
       expect(env.ok).toBe(false);
