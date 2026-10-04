@@ -121,6 +121,8 @@ function firstSentence(text: string): string {
   const para = raw.indexOf("\n\n");
   if (para !== -1) cut = Math.min(cut, para);
   let sentence = raw.slice(0, cut).replace(/\s+/g, " ").trim();
+  // Redact before the 200-char cap so a cut never leaves half a secret.
+  sentence = redactSecrets(sentence);
   if (sentence.length > 200) sentence = sentence.slice(0, 200);
   return sentence;
 }
@@ -717,6 +719,29 @@ export function scrubPaths(text: string, absRoot: string): string {
   return out;
 }
 
+export const REDACTED = "[REDACTED]";
+const BASE64_ONLY = /^[A-Za-z0-9+/=]{40,}$/;
+
+/**
+ * Redact secret-looking text (rules a-d). Runs before any length cap so a
+ * cut can never leave half a secret.
+ */
+export function redactSecrets(text: string): string {
+  let out = text;
+  // (d) whole content of a single-line string literal that is pure 40+ base64 chars.
+  out = out.replace(/'([^'\n]*)'|"([^"\n]*)"|`([^`\n]*)`/g, (match) => {
+    const quote = match.charAt(0);
+    const content = match.slice(1, -1);
+    if (BASE64_ONLY.test(content)) return `${quote}${REDACTED}${quote}`;
+    return match;
+  });
+  // (a) (b) (c) anywhere in the text.
+  out = out.replace(/AKIA[0-9A-Z]{16}/g, REDACTED);
+  out = out.replace(/ghp_[A-Za-z0-9]{20,}/g, REDACTED);
+  out = out.replace(/sk-[A-Za-z0-9]{20,}/g, REDACTED);
+  return out;
+}
+
 function collapseSignature(text: string): string {
   let single = text.replace(/\s+/g, " ").trim();
   if (single.length > 300) {
@@ -731,20 +756,16 @@ function signatureFor(
   raw: RawSymbol,
   absRoot: string,
 ): string {
+  let source: string | null = null;
   try {
     if (raw.kind === "class") {
-      return collapseSignature(scrubPaths(`class ${raw.name}`, absRoot));
-    }
-    if (raw.kind === "interface") {
-      return collapseSignature(scrubPaths(`interface ${raw.name}`, absRoot));
-    }
-    if (raw.kind === "type") {
+      source = `class ${raw.name}`;
+    } else if (raw.kind === "interface") {
+      source = `interface ${raw.name}`;
+    } else if (raw.kind === "type") {
       const decl = raw.declaration as bundledTs.TypeAliasDeclaration;
-      return collapseSignature(
-        scrubPaths(`type ${raw.name} = ${decl.type.getText()}`, absRoot),
-      );
-    }
-    if (raw.kind === "const") {
+      source = `type ${raw.name} = ${decl.type.getText()}`;
+    } else if (raw.kind === "const") {
       const decl = raw.declaration as bundledTs.VariableDeclaration;
       const t = checker.getTypeAtLocation(decl.name);
       const typeString = checker.typeToString(
@@ -752,38 +773,44 @@ function signatureFor(
         undefined,
         ts.TypeFormatFlags.NoTruncation,
       );
-      return collapseSignature(
-        scrubPaths(`const ${raw.name}: ${typeString}`, absRoot),
+      source = `const ${raw.name}: ${typeString}`;
+    } else {
+      // function or method: "<name><checker signature>".
+      let target: bundledTs.Node = raw.declaration;
+      if (
+        raw.kind === "function" &&
+        ts.isVariableDeclaration(raw.declaration) &&
+        raw.declaration.initializer
+      ) {
+        const unwrapped = unwrapParens(ts, raw.declaration.initializer);
+        if (
+          ts.isArrowFunction(unwrapped) ||
+          ts.isFunctionExpression(unwrapped)
+        ) {
+          target = unwrapped;
+        }
+      }
+      const sig = checker.getSignatureFromDeclaration(
+        target as bundledTs.SignatureDeclaration,
       );
-    }
-    // function or method: "<name><checker signature>".
-    let target: bundledTs.Node = raw.declaration;
-    if (
-      raw.kind === "function" &&
-      ts.isVariableDeclaration(raw.declaration) &&
-      raw.declaration.initializer
-    ) {
-      const unwrapped = unwrapParens(ts, raw.declaration.initializer);
-      if (ts.isArrowFunction(unwrapped) || ts.isFunctionExpression(unwrapped)) {
-        target = unwrapped;
+      if (sig) {
+        const rendered = checker.signatureToString(
+          sig,
+          undefined,
+          ts.TypeFormatFlags.NoTruncation,
+        );
+        source = `${raw.name}${rendered}`;
       }
     }
-    const sig = checker.getSignatureFromDeclaration(
-      target as bundledTs.SignatureDeclaration,
-    );
-    if (sig) {
-      const rendered = checker.signatureToString(
-        sig,
-        undefined,
-        ts.TypeFormatFlags.NoTruncation,
-      );
-      return collapseSignature(scrubPaths(`${raw.name}${rendered}`, absRoot));
-    }
   } catch {
-    // fall through to the unknown-signature fallback below
+    source = null;
   }
-  // Never throw: some signatures cannot be computed by the checker.
-  return "(unknown signature)";
+  if (source === null) {
+    // Never throw: some signatures cannot be computed by the checker.
+    return "(unknown signature)";
+  }
+  // Order: scrubPaths -> redactSecrets -> collapseSignature (300-char cut last).
+  return collapseSignature(redactSecrets(scrubPaths(source, absRoot)));
 }
 
 export interface IndexedSymbol extends RawSymbol {

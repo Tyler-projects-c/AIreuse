@@ -1,6 +1,6 @@
 import type { IndexedSymbol, SymbolIndex } from "./index.js";
 import path from "node:path";
-import { toForwardSlashes, toSummary } from "./index.js";
+import { redactSecrets, toForwardSlashes, toSummary } from "./index.js";
 import {
   GetDefinitionInputSchema,
   GetDefinitionOutputSchema,
@@ -74,26 +74,6 @@ function normalizePathPrefix(raw: string): string | null {
   return stripped;
 }
 
-const REDACTED = "[REDACTED]";
-const BASE64_ONLY = /^[A-Za-z0-9+/=]{40,}$/;
-
-/** Redact secret-looking text. Applied after the max_lines cut. */
-function redactSecrets(text: string): string {
-  let out = text;
-  // (d) whole content of a single-line string literal that is pure 40+ base64 chars.
-  out = out.replace(/'([^'\n]*)'|"([^"\n]*)"|`([^`\n]*)`/g, (match) => {
-    const quote = match.charAt(0);
-    const content = match.slice(1, -1);
-    if (BASE64_ONLY.test(content)) return `${quote}${REDACTED}${quote}`;
-    return match;
-  });
-  // (a) (b) (c) anywhere in the text.
-  out = out.replace(/AKIA[0-9A-Z]{16}/g, REDACTED);
-  out = out.replace(/ghp_[A-Za-z0-9]{20,}/g, REDACTED);
-  out = out.replace(/sk-[A-Za-z0-9]{20,}/g, REDACTED);
-  return out;
-}
-
 /** Walk up from an import declaration part to the enclosing ImportDeclaration. */
 function moduleSpecifierOf(
   ts: typeof import("typescript"),
@@ -128,8 +108,9 @@ function collectImportsUsed(
 ): { module: string; names: string[] }[] {
   const byModule = new Map<string, Set<string>>();
 
-  const record = (id: import("typescript").Node): void => {
-    const symbol = checker.getSymbolAtLocation(id);
+  const recordSymbol = (
+    symbol: import("typescript").Symbol | undefined,
+  ): void => {
     if (!symbol) return;
     for (const decl of symbol.declarations ?? []) {
       if (
@@ -153,6 +134,10 @@ function collectImportsUsed(
     }
   };
 
+  const record = (id: import("typescript").Node): void => {
+    recordSymbol(checker.getSymbolAtLocation(id));
+  };
+
   const visit = (node: import("typescript").Node): void => {
     // Property names (obj.helper) and qualified-name right sides are not bindings.
     if (ts.isPropertyAccessExpression(node)) {
@@ -161,6 +146,11 @@ function collectImportsUsed(
     }
     if (ts.isQualifiedName(node)) {
       visit(node.left);
+      return;
+    }
+    // Shorthand `{ helper }` binds the import value; `{ helper: 1 }` does not.
+    if (ts.isShorthandPropertyAssignment(node)) {
+      recordSymbol(checker.getShorthandAssignmentValueSymbol(node));
       return;
     }
     if (ts.isIdentifier(node)) {

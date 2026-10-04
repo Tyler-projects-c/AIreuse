@@ -116,3 +116,10 @@ get_signature in {symbol_id, compare_to?:symbol_id}
   declaration's/statement's jsDoc property).
 - in_current_diff is always false for now. Unknown id -> UNKNOWN_SYMBOL; malformed id -> INVALID_ARGS.
 - get_definition works for test symbols too (is_test only hides them from search by default).
+## Amendments (Task 5b)
+- A definition body's first line includes the declaration's own leading indentation (spaces/tabs on that line),
+  never earlier lines and never JSDoc, so every line of the body keeps its original indentation.
+- Redaction (rules a-d from the Task 5 amendment) applies to every string a tool returns that derives from source:
+  signature, doc_summary, and body now, and type strings and reference context in later tasks.
+- Redaction runs BEFORE a string is cut to its length cap, so a cut can never leave half a secret.
+- imports_used also counts shorthand properties: in `{ helper }` the import `helper` is used.

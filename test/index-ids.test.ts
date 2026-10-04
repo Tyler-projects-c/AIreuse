@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { buildIndex, buildProject, toForwardSlashes, toSummary } from "../src/index.js";
 import { SymbolSummarySchema } from "../src/schemas.js";
+import { createTools } from "../src/tools.js";
 import { makeTempProject } from "./helpers.js";
+
+// Built dynamically so this test source contains no token-shaped literal.
+const SECRET_AKIA = "AKIA" + "ABCDEFGH01234567";
+const SECRET_GHP = "gh" + "p_" + "abcdefghij".repeat(3);
+const SECRET_B64 = "QUJDREVGR0hJSktMTU5PUA".repeat(2);
+const SECRET_SK = "sk-" + "abcdefghij".repeat(3);
 
 function params(n: number): string {
   const parts: string[] = [];
@@ -40,6 +47,11 @@ export function overloaded(a: number): number;
 export function overloaded(a: unknown): unknown {
   return a as number;
 }
+export const KEY = "${SECRET_AKIA}";
+export const GH = "${SECRET_GHP}";
+export const B64 = "${SECRET_B64}";
+/** Uses key ${SECRET_SK} carefully. Second sentence. */
+export function f(): void {}
 export function big(${params(40)}): number {
   return 0;
 }
@@ -120,6 +132,26 @@ describe("index ids and signatures", () => {
     const index = buildIndex(buildProject(buildFixture()));
     const plus = index.all().find((s) => s.name === "plus");
     expect(plus?.doc_summary).toBe("Adds numbers.");
+  });
+
+  it("redacts secrets in signatures and doc summaries", () => {
+    const index = buildIndex(buildProject(buildFixture()));
+    const byName = new Map(index.all().map((s) => [s.name, s]));
+    expect(byName.get("KEY")?.signature).toBe('const KEY: "[REDACTED]"');
+    expect(byName.get("GH")?.signature).toBe('const GH: "[REDACTED]"');
+    expect(byName.get("B64")?.signature).toBe('const B64: "[REDACTED]"');
+    const f = byName.get("f");
+    expect(f?.doc_summary).toContain("[REDACTED]");
+    expect(f?.doc_summary).not.toContain(SECRET_SK);
+
+    const tools = createTools(index);
+    const secrets = [SECRET_AKIA, SECRET_GHP, SECRET_B64, SECRET_SK];
+    for (const query of ["KEY", "GH", "B64", "f"]) {
+      const serialized = JSON.stringify(tools.search_symbols({ query }));
+      for (const secret of secrets) {
+        expect(serialized, query).not.toContain(secret);
+      }
+    }
   });
 
   it("summaries validate against the schema", () => {

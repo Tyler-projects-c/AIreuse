@@ -57,6 +57,14 @@ const A_SRC = [
   "  return helper + 1;",
   "}",
   "",
+  "export function returnsShorthand() {",
+  "  return { helper };",
+  "}",
+  "",
+  "export function returnsOther() {",
+  "  return { other: 1 };",
+  "}",
+  "",
   "export function three(): number {",
   "  return 1;",
   "}",
@@ -213,6 +221,16 @@ describe("get_definition", () => {
 
     const shadow = def("shadow");
     expect(shadow.imports_used).toEqual([]);
+  });
+
+  it("counts shorthand properties as imports but not normal properties", () => {
+    const shorthand = def("returnsShorthand");
+    expect(shorthand.imports_used).toEqual([
+      { module: "./b", names: ["helper"] },
+    ]);
+
+    const normal = def("returnsOther");
+    expect(normal.imports_used).toEqual([]);
   });
 
   it("detects @deprecated tags", () => {
