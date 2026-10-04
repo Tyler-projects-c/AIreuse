@@ -127,9 +127,10 @@ describe("get_references", () => {
       }),
     );
     expect(shown.total).toBe(6);
+    expect(shown.by_file_truncated).toBe(false);
     expect(shown.by_file).toEqual([
-      { file: "src/lib.test.ts", count: 2 },
       { file: "src/main.ts", count: 4 },
+      { file: "src/lib.test.ts", count: 2 },
     ]);
     expect(shown.references.map((r) => r.file)).toContain("src/lib.test.ts");
   });
@@ -236,5 +237,104 @@ describe("get_references", () => {
       symbol_id: idOf("ping", "src/lib.ts"),
     });
     expect(second).toEqual(first);
+  });
+
+  it("rejects an empty kinds list", () => {
+    const env = mainTools.get_references({
+      symbol_id: idOf("ping", "src/lib.ts"),
+      kinds: [],
+    });
+    expect(env.ok).toBe(false);
+    if (!env.ok) expect(env.error.code).toBe("INVALID_ARGS");
+  });
+
+  it("treats call arguments and call results as other", () => {
+    const dir = makeTempProject({
+      "src/handler.ts": `export function handler(): void {}\n`,
+      "src/app.ts": `import { handler } from "./handler";\n\nexport function boot(app: { use(h: unknown): { listen(): void } }): void {\n  app.use(handler).listen();\n}\n`,
+      "src/lib.ts": LIB_SRC,
+      "src/curried.ts": `import { ping } from "./lib";\n\ndeclare const foo: (f: (n: number) => number) => (n: number) => number;\n\nexport const r = foo(ping)(2);\n`,
+    });
+    const index = buildIndex(buildProject(dir));
+    const tools = createTools(index);
+    const id = (name: string, file: string): string => {
+      const sym = index.all().find((s) => s.name === name && s.file === file);
+      if (!sym) throw new Error(`symbol not found: ${name} in ${file}`);
+      return sym.symbol_id;
+    };
+
+    const handlerRefs = okRefs(
+      tools.get_references({ symbol_id: id("handler", "src/handler.ts") }),
+    );
+    expect(handlerRefs.references.map((r) => [r.line, r.kind])).toEqual([
+      [1, "import"],
+      [4, "other"],
+    ]);
+
+    const pingRefs = okRefs(
+      tools.get_references({ symbol_id: id("ping", "src/lib.ts") }),
+    );
+    expect(pingRefs.references.map((r) => [r.line, r.kind])).toEqual([
+      [1, "import"],
+      [5, "other"],
+    ]);
+  });
+
+  it("treats ns.ping(1) through a namespace import as call", () => {
+    const dir = makeTempProject({
+      "src/lib.ts": LIB_SRC,
+      "src/ns.ts": `import * as ns from "./lib";\n\nexport function useNs(): number {\n  return ns.ping(1);\n}\n`,
+    });
+    const index = buildIndex(buildProject(dir));
+    const tools = createTools(index);
+    const sym = index
+      .all()
+      .find((s) => s.name === "ping" && s.file === "src/lib.ts");
+    const data = okRefs(
+      tools.get_references({ symbol_id: sym ? sym.symbol_id : "s_1" }),
+    );
+    expect(data.total).toBe(1);
+    expect(data.references.map((r) => [r.line, r.kind])).toEqual([[4, "call"]]);
+  });
+
+  it("treats new Thing() as call", () => {
+    const dir = makeTempProject({
+      "src/thing.ts": `export class Thing {\n  constructor() {}\n}\n`,
+      "src/use.ts": `import { Thing } from "./thing";\n\nexport const t = new Thing();\n`,
+    });
+    const index = buildIndex(buildProject(dir));
+    const tools = createTools(index);
+    const sym = index
+      .all()
+      .find((s) => s.name === "Thing" && s.file === "src/thing.ts");
+    const data = okRefs(
+      tools.get_references({ symbol_id: sym ? sym.symbol_id : "s_1" }),
+    );
+    expect(data.references.map((r) => [r.line, r.kind])).toEqual([
+      [1, "import"],
+      [3, "call"],
+    ]);
+  });
+
+  it("caps by_file at 20 entries and stays within the byte budget", () => {
+    const files: Record<string, string> = { "src/lib.ts": LIB_SRC };
+    for (let i = 0; i < 60; i++) {
+      const name = `f${String(i).padStart(2, "0")}`;
+      files[`src/${name}.ts`] = `export { ping } from "./lib";\n`;
+    }
+    const dir = makeTempProject(files);
+    const index = buildIndex(buildProject(dir));
+    const tools = createTools(index);
+    const sym = index
+      .all()
+      .find((s) => s.name === "ping" && s.file === "src/lib.ts");
+    const env = tools.get_references({ symbol_id: sym ? sym.symbol_id : "s_1" });
+    const data = okRefs(env);
+    expect(data.total).toBe(60);
+    expect(data.by_file.length).toBeLessThanOrEqual(20);
+    expect(data.by_file_truncated).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(env), "utf8")).toBeLessThanOrEqual(
+      6144,
+    );
   });
 });

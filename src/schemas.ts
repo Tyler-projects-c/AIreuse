@@ -68,7 +68,7 @@ export type GetDefinitionInput = z.infer<typeof GetDefinitionInputSchema>;
 export const GetReferencesInputSchema = z
   .object({
     symbol_id: SymbolIdSchema,
-    kinds: z.array(ReferenceKindSchema).optional(),
+    kinds: z.array(ReferenceKindSchema).min(1).optional(),
     include_tests: z.boolean().default(false),
     limit: z.number().int().min(1).max(20).default(10),
   })
@@ -133,6 +133,7 @@ export type ReferenceEntry = z.infer<typeof ReferenceEntrySchema>;
 export const GetReferencesOutputSchema = z.object({
   total: z.number().int().min(0),
   by_file: z.array(ReferenceByFileSchema),
+  by_file_truncated: z.boolean(),
   references: z.array(ReferenceEntrySchema),
   truncated: z.boolean(),
 });

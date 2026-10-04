@@ -159,12 +159,19 @@ return_assignable is also 'unknown' when either side has type parameters or a re
   because they are the "import" references.
 - file is repo-relative with forward slashes; references outside the root are dropped. include_tests=false
   hides references whose own file is a test file.
-- Kind is classified in this order: import (inside an import/export specifier or declaration), call (part of
-  the callee of a call/new expression), type_use (inside a type node), else other.
+- Kind is classified in this order: import (inside an import/export specifier or declaration), call (the
+  reference is exactly the direct callee of a call/new expression), type_use (inside a type node), else
+  other. "Direct callee" is strict: from the reference we climb only through a PropertyAccessExpression
+  whose `.name` is the current node (so `ns.ping(1)` counts), a ParenthesizedExpression, or a
+  NonNullExpression, and return call only when the parent is a CallExpression/NewExpression whose
+  `.expression` is that node. Call arguments and call results never count (e.g. `foo(ping)(2)` and
+  `app.use(handler).listen()` classify the inner reference as other).
 - context = the reference's source line, trimmed, with scrubPaths then redaction applied, then cut to 200
   chars (never before redaction). enclosing_symbol_id = findEnclosing(file, offset), or null at the top level.
-- total = every matching reference; by_file counts those matches per file (sorted by file); references = the
-  first `limit` (sorted by file then offset); truncated = true when the limit or the 6 KB byte cap dropped
-  references. kinds, when given, keeps only the listed kinds (an empty list keeps none).
+- total = every matching reference (the full count, unaffected by the by_file cap or limit). by_file counts
+  matches per file, sorted by count descending then file ascending, and is capped at 20 entries;
+  by_file_truncated = true when entries were dropped. references = the first `limit` (sorted by file then
+  offset); truncated = true when the limit or the 6 KB byte cap dropped references. kinds, when given, keeps
+  only the listed kinds and must be non-empty, so `kinds: []` is INVALID_ARGS.
 - Output is validated with GetReferencesOutputSchema; the envelope is trimmed to 6 KB by dropping whole
   references from the end.

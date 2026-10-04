@@ -33,6 +33,7 @@ import type {
 } from "./schemas.js";
 
 const MAX_RESULT_BYTES = 6144;
+const MAX_BY_FILE = 20;
 
 /**
  * Shared INVALID_ARGS envelope built from a failed input schema parse.
@@ -156,25 +157,37 @@ function isImportLikeNode(
   return false;
 }
 
-/** True when `node` is (part of) the callee of a call or new expression. */
+/**
+ * True when `node` is exactly the direct callee of a call or new expression.
+ * From the reference we climb only through a PropertyAccessExpression whose
+ * `.name` is the current node (so `ns.ping(1)` counts), or a
+ * ParenthesizedExpression / NonNullExpression; anything else stops the walk,
+ * so call arguments and call results never count.
+ */
 function isCallTargetNode(
   ts: typeof import("typescript"),
   node: import("typescript").Node,
 ): boolean {
-  let child: import("typescript").Node = node;
-  for (
-    let n: import("typescript").Node | undefined = node.parent;
-    n;
-    child = n, n = n.parent
-  ) {
-    if (
-      (ts.isCallExpression(n) || ts.isNewExpression(n)) &&
-      n.expression === child
-    ) {
-      return true;
+  let current: import("typescript").Node = node;
+  for (;;) {
+    const parent: import("typescript").Node | undefined = current.parent;
+    if (parent === undefined) return false;
+    if (ts.isPropertyAccessExpression(parent) && parent.name === current) {
+      current = parent;
+      continue;
     }
+    if (
+      ts.isParenthesizedExpression(parent) ||
+      ts.isNonNullExpression(parent)
+    ) {
+      current = parent;
+      continue;
+    }
+    return (
+      (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
+      parent.expression === current
+    );
   }
-  return false;
 }
 
 /** True when any ancestor of `node` is a type node. */
@@ -886,9 +899,13 @@ export function createTools(index: SymbolIndex): {
     const total = found.length;
     const counts = new Map<string, number>();
     for (const f of found) counts.set(f.file, (counts.get(f.file) ?? 0) + 1);
-    const by_file = [...counts.entries()]
-      .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    const allByFile = [...counts.entries()]
+      .sort((a, b) =>
+        b[1] !== a[1] ? b[1] - a[1] : a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0,
+      )
       .map(([file, count]) => ({ file, count }));
+    const by_file = allByFile.slice(0, MAX_BY_FILE);
+    const by_file_truncated = allByFile.length > by_file.length;
 
     let references = found.slice(0, args.limit).map((f) => ({
       file: f.file,
@@ -903,6 +920,7 @@ export function createTools(index: SymbolIndex): {
       GetReferencesOutputSchema.parse({
         total,
         by_file,
+        by_file_truncated,
         references,
         truncated,
       });
