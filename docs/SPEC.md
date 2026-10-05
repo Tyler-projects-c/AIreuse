@@ -175,3 +175,24 @@ return_assignable is also 'unknown' when either side has type parameters or a re
   only the listed kinds and must be non-empty, so `kinds: []` is INVALID_ARGS.
 - Output is validated with GetReferencesOutputSchema; the envelope is trimmed to 6 KB by dropping whole
   references from the end.
+## CLI contract (Task 8)
+- Entry point: run(argv, io) -> number. It returns the exit code and never calls process.exit or throws; every
+  failure becomes a one-line message (or a JSON error envelope). io = {out:(s)=>void, err:(s)=>void}. The
+  top-level code only sets process.exitCode from run(process.argv.slice(2), {out: console.log, err:
+  console.error}), and only when the module is the process entry point, so importing it has no side effects.
+- Exit codes: 0 success; 1 a tool returned an error envelope, or the root or index could not be built; 2 a
+  usage error (unknown command, unknown flag, missing or extra positional, or a bad flag value).
+- Flag validation: --limit and --max-lines must be positive integers, else exit 2, and a NaN is never passed
+  to a tool. --kind must be one of function|method|class|interface|type|const. --kinds must be a non-empty
+  comma-separated subset of call|import|type_use|other. An unknown flag reports "unknown option: <flag>",
+  never the raw parseArgs error.
+- Output discipline: human errors go to err as a single "error: <message>" line, never a stack trace. With
+  --json, out receives exactly one line of JSON and nothing else: the tool envelope for search/def/refs/sig,
+  or {"ok":false,"error":{"code":"USAGE","message":"..."}} for a usage error. --json governs the
+  envelope-producing commands; stats is always the human report.
+- Root problems: a missing --root directory gives "error: root directory not found: <path>"; a root with no
+  TypeScript files gives "error: no TypeScript files found under: <path>". Both exit 1 (with --json they
+  become an error envelope with code INVALID_ARGS).
+- Help: --help prints usage to out and exits 0. No command prints usage to err and exits 2.
+- Root paths: --root accepts relative paths, trailing separators and both slash styles (backslashes are
+  normalized on POSIX).
