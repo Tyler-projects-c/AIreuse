@@ -66,6 +66,7 @@ describe("schemas", () => {
     expect(SearchSymbolsInputSchema.parse({ query: "foo" })).toMatchObject({
       include_tests: false,
       limit: 5,
+      offset: 0,
     });
     expect(GetDefinitionInputSchema.parse({ symbol_id: "s_1" })).toMatchObject({
       max_lines: 60,

@@ -690,9 +690,13 @@ export function createTools(index: SymbolIndex): {
       });
     }
 
-    let truncated = scored.length > args.limit;
+    // Pagination applies AFTER filtering and ranking (or the termless (file,
+    // line) order), so consecutive pages are contiguous: page = [offset,
+    // offset+limit). An offset at or past the end yields no results.
+    const pageEnd = args.offset + args.limit;
+    let truncated = scored.length > pageEnd;
     let results: (SymbolSummary & { match: MatchSource })[] = scored
-      .slice(0, args.limit)
+      .slice(args.offset, pageEnd)
       .map((s) => ({ ...s.summary, match: s.match }));
     // `file_filter_matched_files` is ABSENT unless `file` was given.
     const envelopeFor = (

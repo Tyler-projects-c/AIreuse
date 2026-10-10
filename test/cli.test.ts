@@ -141,6 +141,65 @@ describe("cli run", () => {
     expect(err.join("\n")).toContain("--limit");
   });
 
+  it("returns 2 for a non-numeric --offset", () => {
+    const { code, err } = runCli([
+      "search",
+      "add",
+      "--offset",
+      "abc",
+      "--root",
+      projectDir,
+    ]);
+    expect(code).toBe(2);
+    expect(err.join("\n")).toContain("--offset");
+  });
+
+  it("returns 2 for a negative --offset", () => {
+    // `=` form so parseArgs does not read "-1" as a flag.
+    const { code, err } = runCli([
+      "search",
+      "add",
+      "--offset=-1",
+      "--root",
+      projectDir,
+    ]);
+    expect(code).toBe(2);
+    expect(err.join("\n")).toContain("--offset");
+  });
+
+  it("accepts --offset 0 and pages past the end with --json", () => {
+    const zero = runCli([
+      "search",
+      "add",
+      "--offset",
+      "0",
+      "--root",
+      projectDir,
+    ]);
+    expect(zero.code).toBe(0);
+    expect(zero.out.join("\n")).toContain("add");
+
+    const past = runCli([
+      "search",
+      "add",
+      "--offset",
+      "5",
+      "--json",
+      "--root",
+      projectDir,
+    ]);
+    expect(past.code).toBe(0);
+    expect(past.err).toEqual([]);
+    expect(past.out).toHaveLength(1);
+    const parsed = JSON.parse(past.out[0] as string) as {
+      ok: boolean;
+      data: { results: unknown[]; truncated: boolean };
+    };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.data.results).toEqual([]);
+    expect(parsed.data.truncated).toBe(false);
+  });
+
   it("returns 2 for --limit 0", () => {
     const { code, err } = runCli([
       "search",

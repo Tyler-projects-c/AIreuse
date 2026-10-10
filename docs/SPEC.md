@@ -32,7 +32,8 @@ SymbolSummary = {symbol_id, name, kind, file, line, exported:boolean, is_test:bo
   signature:string (<=300 chars), doc_summary:string|null (first JSDoc sentence, <=200 chars)}
 
 ## Tools
-search_symbols in {query:1-100 chars, kind?, path_prefix?, include_tests?=false, limit?=5 (1-10)}
+search_symbols in {query:1-100 chars, kind?, path_prefix?, file?, include_tests?=false, limit?=5 (1-10),
+  offset?=0 (>=0)}
   out {results:(SymbolSummary & {match:"name"|"doc"|"signature"})[], truncated}
   Ranking: split names/docs/signatures into lowercase tokens (camelCase, snake_case, kebab). Score:
   full-name match 5, name token 3 each, doc token 1.5, signature token 1. Match field = highest
@@ -182,8 +183,8 @@ return_assignable is also 'unknown' when either side has type parameters or a re
   console.error}), and only when the module is the process entry point, so importing it has no side effects.
 - Exit codes: 0 success; 1 a tool returned an error envelope, or the root or index could not be built; 2 a
   usage error (unknown command, unknown flag, missing or extra positional, or a bad flag value).
-- Flag validation: --limit and --max-lines must be positive integers, else exit 2, and a NaN is never passed
-  to a tool. --kind must be one of function|method|class|interface|type|const. --kinds must be a non-empty
+- Flag validation: --limit and --max-lines must be positive integers and --offset must be a non-negative
+  integer (0 is valid), else exit 2, and a NaN is never passed to a tool. --kind must be one of function|method|class|interface|type|const. --kinds must be a non-empty
   comma-separated subset of call|import|type_use|other. An unknown flag reports "unknown option: <flag>",
   never the raw parseArgs error.
 - Output discipline: human errors go to err as a single "error: <message>" line, never a stack trace. With
@@ -240,3 +241,17 @@ Optional `file` scope on search_symbols (tool input, output field, CLI `--file`)
   truncation fields, and with `match` reported as "name" (the listing is driven by the symbol's own file, not by
   any term). When `file` is NOT present, an empty or whitespace-only term remains INVALID_ARGS exactly as before.
   This is what makes "list the symbols in the canonical's file" expressible with four tools.
+
+Optional `offset` pagination on search_symbols (tool input, CLI `--offset`).
+- `offset` is an integer >= 0, default 0; the `limit` range is unchanged (1-10, default 5). No output field was
+  added: `offset` never appears in a response.
+- Pagination is applied AFTER filtering (kind, path_prefix, file, include_tests) and AFTER ranking (or after the
+  (file, line) order of the termless file listing), so the ordering is deterministic and consecutive pages have
+  no gaps or overlaps: page = ordered[offset, offset + limit).
+- `truncated` is true iff matches remain beyond the page OR the 6 KB byte cap trimmed the page. An offset at or
+  past the end of the match list gives `results: []` and `truncated: false`.
+- ADVANCING: the next offset is `offset + results.length`, NOT `offset + limit`, because the 6 KB byte cap can
+  return fewer than `limit` results and advancing by `limit` would skip symbols whose bytes were trimmed away.
+- Omitting `offset` gives byte-identical output to passing `offset: 0`; every existing behavior is unchanged.
+- With `file` and no term, advancing the offset enumerates every symbol in scope — including scopes that hold
+  more than `limit` (or more than 10) symbols, which were previously unreachable.

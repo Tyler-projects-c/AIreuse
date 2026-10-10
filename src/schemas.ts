@@ -57,6 +57,8 @@ export const SearchSymbolsInputSchema = z
     file: z.string().optional(),
     include_tests: z.boolean().default(false),
     limit: z.number().int().min(1).max(10).default(5),
+    // Pagination over the filtered, ranked match list. 0 means "first page".
+    offset: z.number().int().min(0).default(0),
   })
   .strict()
   .superRefine((value, ctx) => {

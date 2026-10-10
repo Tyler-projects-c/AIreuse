@@ -26,6 +26,7 @@ export const USAGE = [
   "Commands: stats, search [query...], def <symbol_id>, refs <symbol_id>, sig <symbol_id>",
   "Flags: --root <dir>  --tsconfig <path>  --json  --symbols",
   "       --kind <kind>  --path-prefix <p>  --file <p>  --include-tests  --limit <n>",
+  "       --offset <n>   (search: 0-based page start; advance by the result count)",
   "       (search: --file may be used without a query to list that file's symbols)",
   "       --max-lines <n>   (def)",
   "       --kinds <call,import,type_use,other>   (refs)",
@@ -41,6 +42,7 @@ const OPTIONS = {
   file: { type: "string" },
   "include-tests": { type: "boolean" },
   limit: { type: "string" },
+  offset: { type: "string" },
   "max-lines": { type: "string" },
   "compare-to": { type: "string" },
   kinds: { type: "string" },
@@ -134,6 +136,22 @@ function parsePositiveInt(
   const value = Number(trimmed);
   if (!Number.isInteger(value) || value < 1) {
     return { ok: false, message: `${flag} must be a positive integer` };
+  }
+  return { ok: true, value };
+}
+
+/** Like parsePositiveInt, but 0 is allowed (pagination offsets). */
+function parseNonNegativeInt(
+  raw: string,
+  flag: string,
+): { ok: true; value: number } | { ok: false; message: string } {
+  const trimmed = raw.trim();
+  if (!/^[0-9]+$/.test(trimmed)) {
+    return { ok: false, message: `${flag} must be a non-negative integer` };
+  }
+  const value = Number(trimmed);
+  if (!Number.isSafeInteger(value) || value < 0) {
+    return { ok: false, message: `${flag} must be a non-negative integer` };
   }
   return { ok: true, value };
 }
@@ -416,6 +434,12 @@ export function run(argv: string[], io: CliIo): number {
     if (!parsedLimit.ok) return usageFailure(io, asJson, parsedLimit.message);
     limit = parsedLimit.value;
   }
+  let offset: number | undefined;
+  if (values.offset !== undefined) {
+    const parsedOffset = parseNonNegativeInt(values.offset, "--offset");
+    if (!parsedOffset.ok) return usageFailure(io, asJson, parsedOffset.message);
+    offset = parsedOffset.value;
+  }
   let maxLines: number | undefined;
   if (values["max-lines"] !== undefined) {
     const parsedMax = parsePositiveInt(values["max-lines"], "--max-lines");
@@ -493,6 +517,7 @@ export function run(argv: string[], io: CliIo): number {
       if (values.file !== undefined) input.file = values.file;
       if (values["include-tests"] === true) input.include_tests = true;
       if (limit !== undefined) input.limit = limit;
+      if (offset !== undefined) input.offset = offset;
       return emitEnvelope(io, asJson, tools.search_symbols(input), (data) =>
         renderSearch(io.out, data as SearchSymbolsOutput),
       );
