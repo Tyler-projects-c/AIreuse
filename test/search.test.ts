@@ -102,9 +102,14 @@ describe("search_symbols", () => {
 
   it("reports the highest contributing source as match", () => {
     const { tools } = buildFixture();
+    // Task 10: "formats" now also stems to "format", which exportCsv's doc
+    // ("Exports rows to CSV format.") holds literally. That stem-only doc hit
+    // is a real recall gain, so it appears BELOW the exact-doc hit toIso
+    // (which contains the literal "Formats"); the ranking is unchanged.
     const byDoc = okData(tools.search_symbols({ query: "formats" })).results;
-    expect(byDoc.map((r) => r.name)).toEqual(["toIso"]);
+    expect(byDoc.map((r) => r.name)).toEqual(["toIso", "exportCsv"]);
     expect(byDoc[0]?.match).toBe("doc");
+    expect(byDoc[0]?.name).toBe("toIso");
     const bySig = okData(tools.search_symbols({ query: "boolean" })).results;
     expect(bySig.map((r) => r.name)).toEqual(["isEven"]);
     expect(bySig[0]?.match).toBe("signature");
@@ -265,5 +270,37 @@ describe("search_symbols", () => {
     const byExact = okData(tools.search_symbols({ query: "round2" })).results;
     expect(byExact[0]?.name).toBe("round2");
     expect(byExact[0]?.match).toBe("name");
+  });
+
+  it("reaches a plural/suffixed word through light stemming", () => {
+    const dir = makeTempProject({
+      "src/throttle.ts":
+        `/** True when the alert was suppressed for this window. */\n` +
+        `export function shouldNotify(): boolean {\n  return true;\n}\n`,
+      "src/alerts.ts": `export const alerts: string[] = [];\n`,
+    });
+    const tools = createTools(buildIndex(buildProject(dir)));
+    expect(
+      okData(tools.search_symbols({ query: "suppress" })).results.map(
+        (r) => r.name,
+      ),
+    ).toContain("shouldNotify");
+    expect(
+      okData(tools.search_symbols({ query: "alert" })).results.map(
+        (r) => r.name,
+      ),
+    ).toContain("shouldNotify");
+  });
+
+  it("ranks an exact token above a stem-only match", () => {
+    const dir = makeTempProject({
+      "src/exact.ts": `export function alerts(): void {\n  return;\n}\n`,
+      "src/stem.ts": `export function alertManager(): void {\n  return;\n}\n`,
+    });
+    const tools = createTools(buildIndex(buildProject(dir)));
+    // "alerts" names the first symbol exactly and stems the second's "alert".
+    const data = okData(tools.search_symbols({ query: "alerts" }));
+    expect(data.results.map((r) => r.name)).toEqual(["alerts", "alertManager"]);
+    expect(data.results[0]?.match).toBe("name");
   });
 });

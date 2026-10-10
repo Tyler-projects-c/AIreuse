@@ -1,9 +1,9 @@
 /**
- * Tokenization for search_symbols (Task 10).
+ * Tokenization and light stemming for search_symbols (Task 10).
  *
- * Pure and dependency-free; applied identically to indexed text (names, doc
- * text, signatures) and to query text, so a query can only ever match tokens
- * the index actually holds.
+ * Both are pure, dependency-free and are applied identically to indexed text
+ * (names, doc text, signatures) and to query text, so a query can only ever
+ * match tokens the index actually holds.
  */
 
 const CAMEL_LOWER_UPPER = /([a-z0-9])([A-Z])/g;
@@ -53,4 +53,57 @@ export function tokenize(text: string): Set<string> {
     }
   }
   return tokens;
+}
+
+/** -es only after a sibilant stem: processes, boxes, watches, dishes, statuses. */
+const SIBILANT_ES = /(?:ss|s|x|z|ch|sh)es$/;
+
+/**
+ * Light, hand-written stemmer shared by indexing and querying. No dependency.
+ *
+ * Rule order (first match wins, then the trailing-e rule):
+ *   0. tokens of 3 chars or fewer are returned unchanged
+ *   1. -ies  -> -y    (applies -> apply)
+ *   2. -es after s/x/z/ch/sh -> drop -es   (processes -> process, statuses -> status)
+ *   3. -s, never -ss/-us/-is -> drop -s    (alerts -> alert; class, status, analysis kept)
+ *   4. -ied  -> -y    (applied -> apply)
+ *   5. -ed   -> drop -ed   (suppressed -> suppress)
+ *   6. -ing  -> drop -ing  (throttling -> throttl)
+ *   7. drop one trailing -e  (throttle -> throttl, code -> cod)
+ *   8. if the result is shorter than 3 chars, keep the original token
+ *
+ * Over-conflation (news -> new, cases -> cas) is accepted because the rule is
+ * applied identically on both sides; exact-token matches still score higher
+ * than stem-only matches (see docs/SPEC.md).
+ */
+export function stemToken(token: string): string {
+  if (token.length <= 3) return token;
+  let stem = token;
+  if (stem.endsWith("ies")) {
+    stem = `${stem.slice(0, -3)}y`;
+  } else if (SIBILANT_ES.test(stem)) {
+    stem = stem.slice(0, -2);
+  } else if (
+    stem.endsWith("s") &&
+    !stem.endsWith("ss") &&
+    !stem.endsWith("us") &&
+    !stem.endsWith("is")
+  ) {
+    stem = stem.slice(0, -1);
+  } else if (stem.endsWith("ied")) {
+    stem = `${stem.slice(0, -3)}y`;
+  } else if (stem.endsWith("ed")) {
+    stem = stem.slice(0, -2);
+  } else if (stem.endsWith("ing")) {
+    stem = stem.slice(0, -3);
+  }
+  if (stem.endsWith("e")) stem = stem.slice(0, -1);
+  return stem.length >= 3 ? stem : token;
+}
+
+/** The stem set of a token set, computed once per symbol. */
+export function stemAll(tokens: Iterable<string>): Set<string> {
+  const stems = new Set<string>();
+  for (const token of tokens) stems.add(stemToken(token));
+  return stems;
 }

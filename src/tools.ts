@@ -21,7 +21,7 @@ import {
   err,
   ok,
 } from "./schemas.js";
-import { tokenize } from "./text.js";
+import { stemAll, stemToken, tokenize } from "./text.js";
 import type {
   GetDefinitionOutput,
   GetReferencesOutput,
@@ -35,6 +35,16 @@ import type {
 
 const MAX_RESULT_BYTES = 6144;
 const MAX_BY_FILE = 20;
+
+// Token weights (SPEC Task 10). A token that matches EXACTLY always scores
+// strictly more than one that only matches through its stem, so existing
+// exact-token ranking is preserved and stem hits slot in below it.
+const WEIGHT_NAME_TOKEN = 3;
+const WEIGHT_NAME_STEM = 2;
+const WEIGHT_DOC_TOKEN = 1.5;
+const WEIGHT_DOC_STEM = 1.2;
+const WEIGHT_SIG_TOKEN = 1;
+const WEIGHT_SIG_STEM = 0.6;
 
 /**
  * Shared INVALID_ARGS envelope built from a failed input schema parse.
@@ -55,6 +65,9 @@ interface Prepared {
   nameTokens: Set<string>;
   docTokens: Set<string>;
   signatureTokens: Set<string>;
+  nameStems: Set<string>;
+  docStems: Set<string>;
+  signatureStems: Set<string>;
   lowerName: string;
   afterDot: string;
 }
@@ -525,12 +538,20 @@ export function createTools(index: SymbolIndex): {
     const afterDot = sym.name.includes(".")
       ? sym.name.slice(sym.name.lastIndexOf(".") + 1)
       : sym.name;
+    const nameTokens = tokenize(sym.name);
+    const docTokens = sym.doc_summary
+      ? tokenize(sym.doc_summary)
+      : new Set<string>();
+    const signatureTokens = tokenize(sym.signature);
     return {
       sym,
       summary: toSummary(sym),
-      nameTokens: tokenize(sym.name),
-      docTokens: sym.doc_summary ? tokenize(sym.doc_summary) : new Set<string>(),
-      signatureTokens: tokenize(sym.signature),
+      nameTokens,
+      docTokens,
+      signatureTokens,
+      nameStems: stemAll(nameTokens),
+      docStems: stemAll(docTokens),
+      signatureStems: stemAll(signatureTokens),
       lowerName: sym.name.toLowerCase(),
       afterDot: afterDot.toLowerCase(),
     };
@@ -562,9 +583,13 @@ export function createTools(index: SymbolIndex): {
       let docScore = 0;
       let signatureScore = 0;
       for (const token of queryTokens) {
-        if (p.nameTokens.has(token)) nameScore += 3;
-        if (p.docTokens.has(token)) docScore += 1.5;
-        if (p.signatureTokens.has(token)) signatureScore += 1;
+        const stem = stemToken(token);
+        if (p.nameTokens.has(token)) nameScore += WEIGHT_NAME_TOKEN;
+        else if (p.nameStems.has(stem)) nameScore += WEIGHT_NAME_STEM;
+        if (p.docTokens.has(token)) docScore += WEIGHT_DOC_TOKEN;
+        else if (p.docStems.has(stem)) docScore += WEIGHT_DOC_STEM;
+        if (p.signatureTokens.has(token)) signatureScore += WEIGHT_SIG_TOKEN;
+        else if (p.signatureStems.has(stem)) signatureScore += WEIGHT_SIG_STEM;
       }
       const score = nameScore + docScore + signatureScore;
       if (score === 0) continue;
