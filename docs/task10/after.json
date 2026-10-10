@@ -1,0 +1,401 @@
+{
+  "root": "C:/Users/Vigneshwaran/Documents/GitHub/PD-scratch",
+  "limit": 10,
+  "includeTests": false,
+  "canonical": {
+    "C1": {
+      "name": "utcDayStart",
+      "file": "app/utils/product-surface-stats.server.ts"
+    },
+    "C2": {
+      "name": "round2",
+      "file": "app/utils/order-verification.server.ts"
+    },
+    "C3": {
+      "name": "encryptToken",
+      "file": "app/utils/crypto.server.ts"
+    },
+    "C4": {
+      "name": "shouldAlertToSentry",
+      "file": "app/utils/alert-throttle.server.ts"
+    },
+    "C5": {
+      "name": "effectiveRevenue",
+      "file": "app/utils/verified-revenue.ts"
+    },
+    "C6": {
+      "name": "DEFAULT_WINDOW_DAYS",
+      "file": "app/utils/attribution.server.ts"
+    },
+    "C7": {
+      "name": "formatRatio",
+      "file": "app/utils/insights.ts",
+      "unindexed": true
+    },
+    "N1": {
+      "name": "utcDayStart",
+      "file": "app/utils/product-surface-stats.server.ts"
+    },
+    "N2": {
+      "name": "lineProductId",
+      "file": "app/utils/order-verification.server.ts"
+    },
+    "N3": {
+      "name": "round2",
+      "file": "app/utils/order-verification.server.ts"
+    }
+  },
+  "queries": [
+    {
+      "case": "C1",
+      "qid": "Q1",
+      "term": "todayUtcMidnight",
+      "results": 9,
+      "truncated": false,
+      "rank": 2,
+      "matched": {
+        "name": "utcDayStart",
+        "file": "app/utils/product-surface-stats.server.ts"
+      }
+    },
+    {
+      "case": "C1",
+      "qid": "Q2",
+      "term": "utc day",
+      "results": 10,
+      "truncated": true,
+      "rank": 1,
+      "matched": {
+        "name": "utcDayStart",
+        "file": "app/utils/product-surface-stats.server.ts"
+      }
+    },
+    {
+      "case": "C1",
+      "qid": "Q3",
+      "term": "midnight",
+      "results": 2,
+      "truncated": false,
+      "rank": null,
+      "matched": null
+    },
+    {
+      "case": "C1",
+      "qid": "Q4",
+      "term": "day start",
+      "results": 10,
+      "truncated": true,
+      "rank": 1,
+      "matched": {
+        "name": "utcDayStart",
+        "file": "app/utils/product-surface-stats.server.ts"
+      }
+    },
+    {
+      "case": "C2",
+      "qid": "Q1",
+      "term": "round2",
+      "results": 5,
+      "truncated": false,
+      "rank": 2,
+      "matched": {
+        "name": "round2",
+        "file": "app/utils/order-verification.server.ts"
+      }
+    },
+    {
+      "case": "C2",
+      "qid": "Q2",
+      "term": "round",
+      "results": 5,
+      "truncated": false,
+      "rank": 3,
+      "matched": {
+        "name": "round2",
+        "file": "app/utils/order-verification.server.ts"
+      }
+    },
+    {
+      "case": "C3",
+      "qid": "Q1",
+      "term": "protectCredential",
+      "results": 3,
+      "truncated": false,
+      "rank": null,
+      "matched": null
+    },
+    {
+      "case": "C3",
+      "qid": "Q2",
+      "term": "credential",
+      "results": 3,
+      "truncated": false,
+      "rank": null,
+      "matched": null
+    },
+    {
+      "case": "C3",
+      "qid": "Q3",
+      "term": "credential vault",
+      "results": 3,
+      "truncated": false,
+      "rank": null,
+      "matched": null
+    },
+    {
+      "case": "C3",
+      "qid": "Q4",
+      "term": "envelope",
+      "results": 1,
+      "truncated": false,
+      "rank": null,
+      "matched": null
+    },
+    {
+      "case": "C3",
+      "qid": "Q5",
+      "term": "aes",
+      "results": 1,
+      "truncated": false,
+      "rank": null,
+      "matched": null
+    },
+    {
+      "case": "C3",
+      "qid": "Q6",
+      "term": "gcm",
+      "results": 1,
+      "truncated": false,
+      "rank": null,
+      "matched": null
+    },
+    {
+      "case": "C3",
+      "qid": "Q7",
+      "term": "encrypt",
+      "results": 2,
+      "truncated": false,
+      "rank": 1,
+      "matched": {
+        "name": "encryptToken",
+        "file": "app/utils/crypto.server.ts"
+      }
+    },
+    {
+      "case": "C4",
+      "qid": "Q1",
+      "term": "throttleAlerts",
+      "results": 9,
+      "truncated": false,
+      "rank": 6,
+      "matched": {
+        "name": "shouldAlertToSentry",
+        "file": "app/utils/alert-throttle.server.ts"
+      }
+    },
+    {
+      "case": "C4",
+      "qid": "Q2",
+      "term": "alert",
+      "results": 7,
+      "truncated": false,
+      "rank": 3,
+      "matched": {
+        "name": "shouldAlertToSentry",
+        "file": "app/utils/alert-throttle.server.ts"
+      }
+    },
+    {
+      "case": "C4",
+      "qid": "Q3",
+      "term": "dedupe",
+      "results": 0,
+      "truncated": false,
+      "rank": null,
+      "matched": null
+    },
+    {
+      "case": "C4",
+      "qid": "Q4",
+      "term": "suppress",
+      "results": 0,
+      "truncated": false,
+      "rank": null,
+      "matched": null
+    },
+    {
+      "case": "C5",
+      "qid": "Q1",
+      "term": "preferredRevenue",
+      "results": 7,
+      "truncated": false,
+      "rank": 4,
+      "matched": {
+        "name": "effectiveRevenue",
+        "file": "app/utils/verified-revenue.ts"
+      }
+    },
+    {
+      "case": "C5",
+      "qid": "Q2",
+      "term": "revenue",
+      "results": 7,
+      "truncated": false,
+      "rank": 4,
+      "matched": {
+        "name": "effectiveRevenue",
+        "file": "app/utils/verified-revenue.ts"
+      }
+    },
+    {
+      "case": "C6",
+      "qid": "Q1",
+      "term": "isWithinPurchaseWindow",
+      "results": 10,
+      "truncated": true,
+      "rank": 3,
+      "matched": {
+        "name": "DEFAULT_WINDOW_DAYS",
+        "file": "app/utils/attribution.server.ts"
+      }
+    },
+    {
+      "case": "C6",
+      "qid": "Q2",
+      "term": "purchase window",
+      "results": 10,
+      "truncated": true,
+      "rank": 3,
+      "matched": {
+        "name": "DEFAULT_WINDOW_DAYS",
+        "file": "app/utils/attribution.server.ts"
+      }
+    },
+    {
+      "case": "C6",
+      "qid": "Q3",
+      "term": "window",
+      "results": 10,
+      "truncated": true,
+      "rank": 1,
+      "matched": {
+        "name": "DEFAULT_WINDOW_DAYS",
+        "file": "app/utils/attribution.server.ts"
+      }
+    },
+    {
+      "case": "C7",
+      "qid": "Q1",
+      "term": "asPercent",
+      "results": 2,
+      "truncated": false,
+      "rank": null,
+      "matched": null
+    },
+    {
+      "case": "C7",
+      "qid": "Q2",
+      "term": "percent",
+      "results": 1,
+      "truncated": false,
+      "rank": null,
+      "matched": null
+    },
+    {
+      "case": "C7",
+      "qid": "Q3",
+      "term": "ratio",
+      "results": 2,
+      "truncated": false,
+      "rank": null,
+      "matched": null
+    },
+    {
+      "case": "C7",
+      "qid": "Q4",
+      "term": "format ratio",
+      "results": 2,
+      "truncated": false,
+      "rank": null,
+      "matched": null
+    },
+    {
+      "case": "C7",
+      "qid": "Q5",
+      "term": "conversion summary",
+      "results": 5,
+      "truncated": false,
+      "rank": null,
+      "matched": null
+    },
+    {
+      "case": "N1",
+      "qid": "Q1",
+      "term": "utcDateString",
+      "results": 10,
+      "truncated": true,
+      "rank": 2,
+      "matched": {
+        "name": "utcDayStart",
+        "file": "app/utils/product-surface-stats.server.ts"
+      }
+    },
+    {
+      "case": "N1",
+      "qid": "Q2",
+      "term": "utc",
+      "results": 9,
+      "truncated": false,
+      "rank": 1,
+      "matched": {
+        "name": "utcDayStart",
+        "file": "app/utils/product-surface-stats.server.ts"
+      }
+    },
+    {
+      "case": "N2",
+      "qid": "Q1",
+      "term": "idFromGid",
+      "results": 10,
+      "truncated": true,
+      "rank": 2,
+      "matched": {
+        "name": "lineProductId",
+        "file": "app/utils/order-verification.server.ts"
+      }
+    },
+    {
+      "case": "N2",
+      "qid": "Q2",
+      "term": "product id",
+      "results": 10,
+      "truncated": true,
+      "rank": 1,
+      "matched": {
+        "name": "lineProductId",
+        "file": "app/utils/order-verification.server.ts"
+      }
+    },
+    {
+      "case": "N3",
+      "qid": "Q1",
+      "term": "roundUpCents",
+      "results": 5,
+      "truncated": false,
+      "rank": 4,
+      "matched": {
+        "name": "round2",
+        "file": "app/utils/order-verification.server.ts"
+      }
+    },
+    {
+      "case": "N3",
+      "qid": "Q2",
+      "term": "cents",
+      "results": 2,
+      "truncated": false,
+      "rank": null,
+      "matched": null
+    }
+  ]
+}

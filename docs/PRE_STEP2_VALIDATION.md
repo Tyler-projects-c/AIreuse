@@ -5,7 +5,10 @@
 enough evidence to detect AI code reinvention? The foundation is tested **as-is**; no code
 was changed to make a case pass.
 
-**Conclusion: FOUNDATION READY FOR STEP 2** (see §8).
+**Conclusion (superseded):** §8 read **FOUNDATION READY FOR STEP 2**. §9, written after
+review and after the Task 10 retrieval fixes, corrects the class labels and the
+conclusion to **FOUNDATION NEEDS CHANGES BEFORE STEP 2**. The original finding is kept
+above its correction rather than deleted.
 
 ---
 
@@ -128,21 +131,36 @@ avoidable when both symbols surface; it is not avoidable from name/signature alo
 
 ## 5. Retrieval limitations discovered (grouped by cause class)
 
-**(a) TOOL LIMITATION** — a defect or missing capability of the four tools/index. None of
-these changed a case verdict, but they shape query success:
+**(a) TOOL LIMITATION** — a defect or missing capability of the four tools/index. As
+written, none of these changed a case verdict, but they shape query success. *(Task 10
+fixed the three marked **FIXED** below; the other two remain. See §9 for the corrections
+to this section.)*
 
 - **No body/code-identifier search.** Indexed tokens come from name, doc and signature
   only. `createCipheriv("aes-256-gcm", …)` in C3's body was not directly searchable;
   `aes`/`gcm` matched only a *file-local* const (`IV_BYTES`), not `encryptToken`.
+  **Still true after Task 10, and this — not stemming — is why `search suppress` is empty
+  (§9.2).**
 - **Exact-token matching, no stemming/pluralization.** `search decimals` returns 0 even
-  though `roundUpCents`'s doc contains "two decimal places"; `search suppress` returns 0
-  even though the canonical's doc says "suppressed".
+  though `roundUpCents`'s doc contains "two decimal places". **FIXED in Task 10** —
+  `search decimals` now returns `roundUpCents`. The second half of this bullet
+  (`search suppress` returns 0 "even though the canonical's doc says 'suppressed'") was a
+  **misdiagnosis**: that word is not in any indexed field, so stemming cannot reach it
+  (§9.2).
 - **A trailing digit is not split off a name.** `search round` matches `roundUpCents`
   (camelCase split) but **not** `round2` (token is the literal `round2`). A natural query
   ("round", "round to 2 decimals") thus misses `round2`; only the exact name or a doc token
-  reaches it.
+  reaches it. **FIXED in Task 10** — `search round` now returns every `round2`. This also
+  removes the mechanism by which control N3 "passed"; see §9.2 and §4 of
+  [`task10/COMPARISON.md`](task10/COMPARISON.md).
 - **No synonym/semantic search.** The new code's own vocabulary can miss a canonical that
-  shares meaning but no tokens (the mechanism behind C3's PARTIAL).
+  shares meaning but no tokens (the mechanism behind C3's PARTIAL). **Still true — and it
+  is a class-(a) cause of C3's PARTIAL, not just a Step 2 improvement (§9.2).**
+- **No way to scope or list a file.** `search_symbols` accepted only `path_prefix`
+  (a plain string prefix), so there was no way to ask for all symbols of one file, and no
+  way to tell "the path matched nothing" from "nothing in the path matched". "Expand within
+  the canonical's file" was therefore not implementable with the four tools. **FIXED in
+  Task 10** — optional `file` scope plus `file_filter_matched_files` (§9.3).
 
 **(b) NEEDS STEP 2** — resolvable by candidate generation or by an LLM forming better
 queries (not a tool defect):
@@ -186,16 +204,19 @@ This is a **sanity check, not a benchmark**: 7 hand-chosen cases (2 genuine, 5 p
 enough to detect a blocking tool defect and to separate tool gaps from Step 2 work; it is
 not a statistically meaningful estimate of real-world retrieval rates. Part 2 is not run.
 
-## 8. Overall conclusion
+## 8. Overall conclusion (superseded by §9)
 
-# FOUNDATION READY FOR STEP 2
+**FOUNDATION READY FOR STEP 2** — *superseded. This heading was demoted from a heading to
+plain text so that the document ends with a single conclusion heading, and the claim below
+that §9 contradicts is struck through rather than deleted.*
 
 **Decision rule applied (fixed in advance).** READY requires YES+PARTIAL ≥ 70% of cases,
 at least half of all cases YES, and every non-YES result class (b) or (c). Observed:
 YES+PARTIAL = **6/7 ≈ 86%** (≥ 70% ✓), YES = **4/7 ≈ 57%** (≥ half ✓), and the non-YES
-results are C3 (b), C6 (b), C7 (c) — **no class (a) failure affected any case**, so nothing
+results are C3 (b), C6 (b), C7 (c) — ~~**no class (a) failure affected any case**, so nothing
 blocks the evidence contract. NEEDS CHANGES does not trigger. The numbers do not fall
-between thresholds, so no user decision is required on that point.
+between thresholds, so no user decision is required on that point.~~ **This claim is wrong:
+§9.2 corrects C3 to (a)+(b), and the rule then fails on its third condition (§9.4).**
 
 **Explanation.** The four tools, as-is, surface the correct canonical in the overwhelming
 majority of cases from the new code alone, and `get_definition` bodies + `get_signature`
@@ -203,6 +224,9 @@ compatibility give enough to justify "same job" whenever it surfaces (C1, C2, C4
 confirmed behaviourally). The two PARTIALs are *discovery/confirmation* shortfalls an LLM
 investigator closes with better queries — not tool defects. The single NO is the
 pre-declared nested-local index gap, which is expected and out of scope for Step 2.
+
+**(Correction: read this paragraph with §9 — "not tool defects" is too generous, and
+class-(b) requirement #2 below was not implementable with the four tools as they were.)**
 
 **Class (b) findings — Step 2 requirements, not failures:**
 
@@ -222,3 +246,101 @@ pre-declared nested-local index gap, which is expected and out of scope for Step
 **Class (c) — known gap to document (not a Step 2 blocker):** nested/local declarations
 (C7) are unindexed; reinventions of component-local helpers cannot be detected by the
 current index.
+
+---
+
+## 9. Corrections after review (Task 10)
+
+This section is a correction, not a rewrite: §8 above is kept verbatim as history, with
+its heading demoted to plain text and the one sentence §9 contradicts struck through. The
+numbers it quotes still reproduce exactly. What changes is the interpretation of the
+sample and the class labels, and therefore the conclusion.
+
+### 9.1 C3 is the only genuine vocabulary-mismatch case, and it was only PARTIAL
+
+C3 (`protectCredential` → `encryptToken`) is the **only** case in the sample whose new
+code shares no name and no vocabulary token with its canonical: it talks about
+`protect`/`credential`/`vault`/`envelope` and its body uses
+`createCipheriv("aes-256-gcm", …)`, while the canonical is called `encryptToken`. It
+scored **PARTIAL**.
+
+C1 and C2 are presented above as the sample's two "genuine" duplicates, but neither is a
+meaningful semantic-vocabulary stress test. C1's new code is `todayUtcMidnight` and its
+canonical is `utcDayStart` — the shared token `utc` is in both names — and C2's canonical
+is literally named `round2`, the exact query that surfaced it. Both were answered by
+typing a token the two symbols obviously share. So the sample's **4/7 YES** rate measures
+how well *exact name-token* search handles duplicates whose names overlap, and the two
+"genuine" cases demonstrate no hard-case retrieval at all. Where the vocabulary genuinely
+diverged (C3), the foundation reached only PARTIAL. **The YES count therefore overstates
+how well name-token search handles different-vocabulary duplicates.**
+
+### 9.2 The earlier class labeling is corrected, not rationalized
+
+§8's claim that **no class (a) failure affected any case** is **wrong**.
+
+- **Missing synonym/body search contributed to C3**, so C3 is **(a) + (b)**, not (b)
+alone. The canonical's indexed tokens include `encrypt`/`decrypt`/`token` (its name, doc
+and signature); the new code's are `protect`/`credential`/`vault`/`envelope`, and the
+only bridge the investigator found (`encrypt`, rank 1, on the 7th of 8 calls) is a
+synonym of the new code's *behaviour* rather than of its words. Only a synonym or body hit
+could bridge that, and both are tool capabilities, not query choices.
+- **The missing stemming and the un-split trailing digit degraded C2, C4 and N3**, even
+where no verdict changed: C2's natural query `round` could not reach `round2` at all
+(1 result, canonical absent); C4's canonical sat at rank 7, i.e. outside the default
+5-result response, and `search alerts` returned a single unrelated symbol where it now
+returns the canonical at rank 4; and control N3 "passed" only because `roundUpCents`
+could not reach `round2` either. §5a listed these
+under "(a) TOOL LIMITATION … none of these changed a case verdict"; Task 10 fixed all
+three, and N3's control property **did** change as a direct result (see §4 of
+[`task10/COMPARISON.md`](task10/COMPARISON.md)).
+- §5a's second attribution — `search suppress` returns 0 because of "exact-token matching,
+no stemming" — was also wrong. "suppressed" appears only in the module JSDoc's later
+paragraphs, in interface **member** names/types (members are not indexed symbols) and in
+the function body; `doc_summary` is the first sentence only. Task 10 added stemming and
+`search suppress` **still** returns 0: the cause is the class-(a) **no-body-search** gap.
+
+### 9.3 The missing file scope made class-(b) requirement #2 unimplementable
+
+§8's class-(b) requirement #2 asks Step 2 to "follow the file-sibling breadcrumb" and
+"treat sibling-file hits as candidate seeds and expand within the file". With the four
+tools as they were, that was not implementable: `search_symbols` had no file or path
+scope (`path_prefix` is a raw string prefix, which cannot express "this file" or "this
+directory and nothing that merely shares its name"), there was no way to enumerate a
+file's symbols, and no way to distinguish a path that matched nothing from a term that
+matched nothing.
+
+**Task 10's `file` scope directly addresses that gap**: an optional segment-boundary path
+filter plus `file_filter_matched_files`, and — with `file` present — a termless listing
+mode that returns a scope's symbols in deterministic (file, line) order. "Expand within
+the canonical's file" is now a single call. Requirement #2 is no longer blocked by the
+toolset.
+
+### 9.4 Re-applying the original fixed decision rule
+
+The rule is unchanged and is applied here to the **corrected** labels and to the
+post-Task-10 replay ([`task10/COMPARISON.md`](task10/COMPARISON.md), 33 frozen queries,
+same root, same canonicals, no verdict upgraded for a longer result list):
+
+| condition | requirement | observed | result |
+|---|---|---|---|
+| (i) | YES+PARTIAL ≥ 70% of cases | 6/7 ≈ 86% | **pass** |
+| (ii) | at least half of all cases YES | 4/7 ≈ 57% | **pass** |
+| (iii) | every non-YES result class (b) or (c) | C3 **(a)+(b)**, C6 (b), C7 (c) | **fail** |
+
+Task 10 moved no verdict (before YES 4 / PARTIAL 2 / NO 1 → after YES 4 / PARTIAL 2 /
+NO 1), caused no regression, and kept recall monotonic; it closed three class-(a)
+retrieval gaps (letter/digit token splitting, light stemming, file scope). It did not
+close the class-(a) gap behind the failure above, because body-text and semantic search
+are explicitly out of scope for it.
+
+The observed numbers do not fall *between* thresholds — conditions (i) and (ii) both pass
+comfortably — the rule fails on its third condition, and it does so because the earlier
+labeling was too generous, not because anything regressed.
+
+The one judgement call left to you: whether "no body-text/synonym retrieval in the Step 1
+foundation" is an accepted boundary or a Step 2 blocker. Every case either surfaces its
+canonical or has a named, understood reason; only the class-(a) component of C3 (and demo
+D5 in the comparison) stands between the current state and a READY verdict under the rule
+as originally fixed.
+
+# FOUNDATION NEEDS CHANGES BEFORE STEP 2

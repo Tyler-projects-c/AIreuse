@@ -196,3 +196,47 @@ return_assignable is also 'unknown' when either side has type parameters or a re
 - Help: --help prints usage to out and exits 0. No command prints usage to err and exits 2.
 - Root paths: --root accepts relative paths, trailing separators and both slash styles (backslashes are
   normalized on POSIX).
+
+## Amendments (Task 10)
+Tokenization (src/text.ts), shared by indexing and querying.
+- Split on non-alphanumerics, camelCase boundaries AND letter/digit boundaries; lowercase; drop empties.
+  Each maximal identifier is indexed BOTH whole and split, so an exact name keeps matching:
+  round2 -> round2, round, 2; base64Encode -> base64encode, base64, base, 64, encode;
+  v2Handler -> v2handler, v2, v, 2, handler; parse_user_id -> parse, user, id; HTTPServer -> httpserver, http, server.
+- The minimum-length/stopword rules are unchanged (the only rule is "non-empty"), so **pure-digit tokens ARE
+  indexed** (`2`, `64`, `5`) as a direct consequence of digit splitting. A bare-number query can therefore match.
+- Tokenization is strictly additive vs Task 4: every token the old rule produced is still produced, so recall
+  is monotonic (ranking may shift).
+
+Light stemming (src/text.ts `stemToken`, applied to names, doc text and signature tokens).
+- One shared pure function, used at index time and at query time. No dependency, no embeddings.
+- Rule order, first match wins, then the trailing-e rule, then the length guard:
+  0. tokens of 3 chars or fewer are returned unchanged;  1. -ies -> -y (applies -> apply);
+  2. -es after s/x/z/ch/sh -> drop -es (processes -> process, statuses -> status);
+  3. -s -> drop -s, never after -ss/-us/-is (alerts -> alert; class/status/analysis kept);
+  4. -ied -> -y (applied -> apply);  5. -ed -> drop (suppressed -> suppress);  6. -ing -> drop (throttling -> throttl);
+  7. drop one trailing -e (throttle -> throttl, code -> cod);  8. if the result is shorter than 3 chars, keep the
+  original token (uses stays uses, ties stays ties).
+- The RAW (unstemmed) token stays indexed alongside its stem. Weights: name token 3 / name stem 2,
+  doc token 1.5 / doc stem 1.2, signature token 1 / signature stem 0.6. An exact token match therefore always
+  scores strictly higher than a stem-only match of the same source, so existing exact-token ranking is preserved.
+- Over-conflation is accepted because the rule is identical on both sides (news -> new, value -> valu,
+  cases -> cas). The rule is locked by a fixed >= 25-pair token -> stem table in test/text.test.ts.
+
+Optional `file` scope on search_symbols (tool input, output field, CLI `--file`).
+- Value is a repo-relative path with forward slashes. Backslashes are normalized to forward slashes; a leading
+  "./" is stripped; a trailing "/" is allowed and means "this is a directory". Absolute paths, drive-lettered
+  paths, any ".." segment and the empty string are usage errors: exit 2 from the CLI, INVALID_ARGS from the tool.
+- Matching is case-sensitive and happens at path-segment boundaries, before ranking and before the limit.
+  "app/utils" matches app/utils/a.ts and app/utils/sub/b.ts but NOT app/utilsX/c.ts; a value naming a file
+  exactly matches that file only. No globs and no extension guessing: "app/index" matches nothing,
+  "app/index.ts" matches that file.
+- When `file` is given, the response also carries `file_filter_matched_files` = the number of distinct indexed
+  files inside the scope, counted over the whole index (independent of kind/include_tests) so a caller can tell
+  "this path matched nothing" from "no symbol in it matched". The field is ABSENT when `file` is not given
+  (backward compatible).
+- **Empty-term decision:** when `file` IS present, `query` may be omitted or empty. The result is then all
+  indexed symbols in scope, in deterministic (file path, then line) order, still subject to `limit` and the
+  truncation fields, and with `match` reported as "name" (the listing is driven by the symbol's own file, not by
+  any term). When `file` is NOT present, an empty or whitespace-only term remains INVALID_ARGS exactly as before.
+  This is what makes "list the symbols in the canonical's file" expressible with four tools.
