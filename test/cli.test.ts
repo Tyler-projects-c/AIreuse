@@ -215,6 +215,72 @@ describe("cli run", () => {
     expect(err.join("\n")).toContain("Usage:");
   });
 
+  it("scopes a search with --file, with or without a query", () => {
+    const withQuery = runCli([
+      "search",
+      "add",
+      "--file",
+      "src/math.ts",
+      "--root",
+      projectDir,
+    ]);
+    expect(withQuery.code).toBe(0);
+    expect(withQuery.out.join("\n")).toContain("add");
+    expect(withQuery.out.join("\n")).toContain("file filter: 1 indexed file(s)");
+    // No query + --file lists that file's symbols.
+    const noQuery = runCli([
+      "search",
+      "--file",
+      "src/math.ts",
+      "--root",
+      projectDir,
+    ]);
+    expect(noQuery.code).toBe(0);
+    expect(noQuery.out.join("\n")).toContain("add");
+  });
+
+  it("returns 2 when search has neither a query nor --file", () => {
+    const { code, err } = runCli(["search", "--root", projectDir]);
+    expect(code).toBe(2);
+    expect(err.join("\n")).toContain("requires a query");
+  });
+
+  it("returns 2 for an invalid --file scope", () => {
+    for (const bad of ["../x", "/abs", "C:/x", ""]) {
+      const { code, err } = runCli([
+        "search",
+        "add",
+        "--file",
+        bad,
+        "--root",
+        projectDir,
+      ]);
+      expect(code, bad).toBe(2);
+      expect(err.join("\n")).toContain("--file");
+    }
+  });
+
+  it("emits a USAGE JSON line for an invalid --file with --json", () => {
+    const { code, out, err } = runCli([
+      "search",
+      "add",
+      "--file",
+      "../x",
+      "--json",
+      "--root",
+      projectDir,
+    ]);
+    expect(code).toBe(2);
+    expect(err).toEqual([]);
+    expect(out).toHaveLength(1);
+    const parsed = JSON.parse(out[0] as string) as {
+      ok: boolean;
+      error: { code: string };
+    };
+    expect(parsed.ok).toBe(false);
+    expect(parsed.error.code).toBe("USAGE");
+  });
+
   it("accepts relative, trailing-slash, forward- and back-slash roots", () => {
     const relative = path.relative(process.cwd(), projectDir);
     const variants = [

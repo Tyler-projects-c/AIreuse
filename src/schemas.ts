@@ -48,13 +48,29 @@ export type SymbolSummary = z.infer<typeof SymbolSummarySchema>;
 
 export const SearchSymbolsInputSchema = z
   .object({
-    query: z.string().trim().min(1).max(100),
+    // Optional so that `file` alone can list a file's symbols. An empty or
+    // whitespace-only term is still an error when `file` is absent.
+    query: z.string().trim().max(100).optional(),
     kind: SymbolKindSchema.optional(),
     path_prefix: z.string().min(1).optional(),
+    // Optional file/path scope, matched at path-segment boundaries.
+    file: z.string().optional(),
     include_tests: z.boolean().default(false),
     limit: z.number().int().min(1).max(10).default(5),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    const hasQuery =
+      value.query !== undefined && value.query.trim().length > 0;
+    const hasFile = value.file !== undefined && value.file.trim().length > 0;
+    if (!hasQuery && !hasFile) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["query"],
+        message: "required when file is absent",
+      });
+    }
+  });
 export type SearchSymbolsInput = z.infer<typeof SearchSymbolsInputSchema>;
 
 export const GetDefinitionInputSchema = z
@@ -91,6 +107,9 @@ export type SearchResultItem = z.infer<typeof SearchResultItemSchema>;
 export const SearchSymbolsOutputSchema = z.object({
   results: z.array(SearchResultItemSchema),
   truncated: z.boolean(),
+  // Number of indexed files inside the `file` scope. Absent when `file` was
+  // not given, so the field is backward compatible.
+  file_filter_matched_files: z.number().int().min(0).optional(),
 });
 export type SearchSymbolsOutput = z.infer<typeof SearchSymbolsOutputSchema>;
 

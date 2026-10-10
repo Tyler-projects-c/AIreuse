@@ -72,6 +72,43 @@ interface Prepared {
   afterDot: string;
 }
 
+/** A normalized `file` search scope: a path prefix matched at segment boundaries. */
+export interface FileScope {
+  /** Repo-relative, forward slashes, no leading "./", no trailing "/". */
+  scope: string;
+  /** True when the caller wrote a trailing "/", i.e. "this is a directory". */
+  isDirectory: boolean;
+}
+
+/**
+ * Normalize a `file` scope, or return null when it is not a valid
+ * repo-relative path. Absolute paths, drive-lettered paths, `..` segments and
+ * the empty string are invalid; backslashes become forward slashes and a
+ * leading "./" is stripped. A trailing "/" is allowed and means a directory.
+ */
+export function normalizeFileScope(raw: string): FileScope | null {
+  const normalized = toForwardSlashes(raw).trim();
+  if (normalized.length === 0) return null;
+  if (/^[A-Za-z]:/.test(normalized)) return null;
+  if (normalized.startsWith("/")) return null;
+  const withoutDot = normalized.replace(/^\.\//, "");
+  const isDirectory = withoutDot.endsWith("/");
+  const scope = isDirectory ? withoutDot.replace(/\/+$/, "") : withoutDot;
+  if (scope.length === 0) return null;
+  if (scope.split("/").includes("..")) return null;
+  return { scope, isDirectory };
+}
+
+/**
+ * Case-sensitive, segment-boundary prefix match. "app/utils" matches
+ * app/utils/a.ts and app/utils/sub/b.ts but never app/utilsX/c.ts; a value
+ * naming a file exactly matches that file only. No globs.
+ */
+export function inFileScope(file: string, scope: FileScope): boolean {
+  if (scope.isDirectory) return file.startsWith(`${scope.scope}/`);
+  return file === scope.scope || file.startsWith(`${scope.scope}/`);
+}
+
 interface Scored {
   sym: IndexedSymbol;
   summary: SymbolSummary;
@@ -570,15 +607,50 @@ export function createTools(index: SymbolIndex): {
       prefix = normalized;
     }
 
-    const queryTrimmed = args.query.trim().toLowerCase();
-    const queryTokens = [...tokenize(args.query)];
+    let scope: FileScope | null = null;
+    if (args.file !== undefined) {
+      scope = normalizeFileScope(args.file);
+      if (scope === null) {
+        return err("INVALID_ARGS", "file must be a repo-relative path");
+      }
+    }
+
+    const queryTrimmed = (args.query ?? "").trim();
+    // The term may be omitted ONLY together with a file scope; that is the
+    // "list the siblings in this file" mode. Without `file` an empty term is
+    // an error exactly as before.
+    const listing = queryTrimmed.length === 0;
+    if (listing && scope === null) {
+      return err("INVALID_ARGS", "query is required unless file is given");
+    }
+    const queryLower = queryTrimmed.toLowerCase();
+    const queryTokens = [...tokenize(queryTrimmed)];
+
+    // Counted over the whole index (independent of include_tests/kind), so an
+    // investigator can tell "this path matched nothing" from "no symbol in it
+    // matched the term".
+    let fileFilterMatchedFiles = 0;
+    if (scope !== null) {
+      const files = new Set<string>();
+      for (const sym of index.all()) {
+        if (inFileScope(sym.file, scope)) files.add(sym.file);
+      }
+      fileFilterMatchedFiles = files.size;
+    }
+
     const scored: Scored[] = [];
     for (const p of prepared) {
       if (!args.include_tests && p.sym.is_test) continue;
       if (args.kind !== undefined && p.sym.kind !== args.kind) continue;
       if (prefix !== null && !p.sym.file.startsWith(prefix)) continue;
+      if (scope !== null && !inFileScope(p.sym.file, scope)) continue;
+      if (listing) {
+        // No term: every in-scope symbol, ordered below by (file, line).
+        scored.push({ sym: p.sym, summary: p.summary, score: 0, match: "name" });
+        continue;
+      }
       const fullNameBonus =
-        p.lowerName === queryTrimmed || p.afterDot === queryTrimmed ? 5 : 0;
+        p.lowerName === queryLower || p.afterDot === queryLower ? 5 : 0;
       let nameScore = fullNameBonus;
       let docScore = 0;
       let signatureScore = 0;
@@ -604,29 +676,47 @@ export function createTools(index: SymbolIndex): {
       scored.push({ sym: p.sym, summary: p.summary, score, match });
     }
 
-    scored.sort((a, b) => {
-      if (a.score !== b.score) return b.score - a.score;
-      if (a.sym.file !== b.sym.file) return a.sym.file < b.sym.file ? -1 : 1;
-      return a.sym.line - b.sym.line;
-    });
+    if (listing) {
+      // Deterministic: file path, then line. No term means no score to rank by.
+      scored.sort((a, b) => {
+        if (a.sym.file !== b.sym.file) return a.sym.file < b.sym.file ? -1 : 1;
+        return a.sym.line - b.sym.line;
+      });
+    } else {
+      scored.sort((a, b) => {
+        if (a.score !== b.score) return b.score - a.score;
+        if (a.sym.file !== b.sym.file) return a.sym.file < b.sym.file ? -1 : 1;
+        return a.sym.line - b.sym.line;
+      });
+    }
 
     let truncated = scored.length > args.limit;
     let results: (SymbolSummary & { match: MatchSource })[] = scored
       .slice(0, args.limit)
       .map((s) => ({ ...s.summary, match: s.match }));
+    // `file_filter_matched_files` is ABSENT unless `file` was given.
+    const envelopeFor = (
+      items: (SymbolSummary & { match: MatchSource })[],
+      cut: boolean,
+    ): unknown =>
+      scope === null
+        ? { results: items, truncated: cut }
+        : {
+            results: items,
+            truncated: cut,
+            file_filter_matched_files: fileFilterMatchedFiles,
+          };
     // Trim from the end until the serialized envelope fits the 6 KB cap.
     while (
       results.length > 0 &&
-      Buffer.byteLength(
-        JSON.stringify(ok({ results, truncated })),
-        "utf8",
-      ) > MAX_RESULT_BYTES
+      Buffer.byteLength(JSON.stringify(ok(envelopeFor(results, truncated))), "utf8") >
+        MAX_RESULT_BYTES
     ) {
       results = results.slice(0, -1);
       truncated = true;
     }
     // parse() throws only for programmer errors; bad input is handled above.
-    const data = SearchSymbolsOutputSchema.parse({ results, truncated });
+    const data = SearchSymbolsOutputSchema.parse(envelopeFor(results, truncated));
     return ok(data);
   }
 

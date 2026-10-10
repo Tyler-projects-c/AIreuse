@@ -13,7 +13,7 @@ import type {
   ResultEnvelope,
   SearchSymbolsOutput,
 } from "./schemas.js";
-import { createTools } from "./tools.js";
+import { createTools, normalizeFileScope } from "./tools.js";
 
 /** Sinks for human output. `out` is stdout, `err` is stderr. */
 export interface CliIo {
@@ -23,9 +23,10 @@ export interface CliIo {
 
 export const USAGE = [
   "Usage: cli <command> [flags]",
-  "Commands: stats, search <query...>, def <symbol_id>, refs <symbol_id>, sig <symbol_id>",
+  "Commands: stats, search [query...], def <symbol_id>, refs <symbol_id>, sig <symbol_id>",
   "Flags: --root <dir>  --tsconfig <path>  --json  --symbols",
-  "       --kind <kind>  --path-prefix <p>  --include-tests  --limit <n>",
+  "       --kind <kind>  --path-prefix <p>  --file <p>  --include-tests  --limit <n>",
+  "       (search: --file may be used without a query to list that file's symbols)",
   "       --max-lines <n>   (def)",
   "       --kinds <call,import,type_use,other>   (refs)",
   "       --compare-to <symbol_id>   (sig)",
@@ -37,6 +38,7 @@ const OPTIONS = {
   json: { type: "boolean" },
   kind: { type: "string" },
   "path-prefix": { type: "string" },
+  file: { type: "string" },
   "include-tests": { type: "boolean" },
   limit: { type: "string" },
   "max-lines": { type: "string" },
@@ -278,12 +280,21 @@ function renderStats(
 }
 
 function renderSearch(out: (s: string) => void, data: SearchSymbolsOutput): void {
-  if (data.results.length === 0) {
+  if (data.results.length > 0) {
+    for (const r of data.results) {
+      out(
+        `${r.symbol_id}  ${r.kind}  ${r.name}  ${r.file}:${r.line}  ${r.signature}`,
+      );
+    }
+  } else {
     out("(no results)");
-    return;
   }
-  for (const r of data.results) {
-    out(`${r.symbol_id}  ${r.kind}  ${r.name}  ${r.file}:${r.line}  ${r.signature}`);
+  // Present only when search was scoped with --file; it separates "the path
+  // matched nothing" from "no symbol in the path matched the query".
+  if (data.file_filter_matched_files !== undefined) {
+    out(
+      `(file filter: ${data.file_filter_matched_files} indexed file(s) in scope)`,
+    );
   }
   if (data.truncated) out("(truncated)");
 }
@@ -382,7 +393,9 @@ export function run(argv: string[], io: CliIo): number {
       return usageFailure(io, asJson, `unexpected extra argument: ${positionals[1]}`);
     }
   } else if (command === "search") {
-    if (positionals.length < 2) {
+    // A query is required unless --file scopes the search (then an omitted
+    // term lists that file's symbols).
+    if (positionals.length < 2 && values.file === undefined) {
       return usageFailure(io, asJson, "search requires a query");
     }
   } else if (command === "def" || command === "refs" || command === "sig") {
@@ -408,6 +421,19 @@ export function run(argv: string[], io: CliIo): number {
     const parsedMax = parsePositiveInt(values["max-lines"], "--max-lines");
     if (!parsedMax.ok) return usageFailure(io, asJson, parsedMax.message);
     maxLines = parsedMax.value;
+  }
+
+  // Path-scope flag: an absolute path, a ".." segment or the empty string is
+  // a usage error (exit 2), matching the rest of the flag contract.
+  if (
+    values.file !== undefined &&
+    normalizeFileScope(values.file) === null
+  ) {
+    return usageFailure(
+      io,
+      asJson,
+      "--file must be a repo-relative path (no absolute paths, no \"..\")",
+    );
   }
 
   // Enum flags.
@@ -464,6 +490,7 @@ export function run(argv: string[], io: CliIo): number {
       if (values["path-prefix"] !== undefined) {
         input.path_prefix = values["path-prefix"];
       }
+      if (values.file !== undefined) input.file = values.file;
       if (values["include-tests"] === true) input.include_tests = true;
       if (limit !== undefined) input.limit = limit;
       return emitEnvelope(io, asJson, tools.search_symbols(input), (data) =>
