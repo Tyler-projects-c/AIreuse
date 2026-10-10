@@ -1,3 +1,5 @@
+2026-10-10: section 10 records an explicit decision; section 9.4's conclusion line is superseded.
+
 # Pre-Step-2 foundation validation
 
 **Question.** Can the deterministic Step 1 foundation (`search_symbols`, `get_definition`,
@@ -333,9 +335,9 @@ retrieval gaps (letter/digit token splitting, light stemming, file scope). It di
 close the class-(a) gap behind the failure above, because body-text and semantic search
 are explicitly out of scope for it.
 
-The observed numbers do not fall *between* thresholds — conditions (i) and (ii) both pass
+~~The observed numbers do not fall *between* thresholds — conditions (i) and (ii) both pass
 comfortably — the rule fails on its third condition, and it does so because the earlier
-labeling was too generous, not because anything regressed.
+labeling was too generous, not because anything regressed.~~ superseded by section 10
 
 The one judgement call left to you: whether "no body-text/synonym retrieval in the Step 1
 foundation" is an accepted boundary or a Step 2 blocker. Every case either surfaces its
@@ -343,4 +345,28 @@ canonical or has a named, understood reason; only the class-(a) component of C3 
 D5 in the comparison) stands between the current state and a READY verdict under the rule
 as originally fixed.
 
-# FOUNDATION NEEDS CHANGES BEFORE STEP 2
+**Mechanical output of section 9.4 (superseded by section 10): FOUNDATION NEEDS CHANGES BEFORE STEP 2**
+
+## 10. Decision record (2026-10-10)
+
+Evidence
+- Original cases (unchanged by Task 10): YES 4 / PARTIAL 2 / NO 1; conditions (i) 86% and (ii) 57% pass; condition (iii) fails only because C3 is class (a)+(b).
+- Rule status: READY not met (condition iii). NEEDS CHANGES not triggered: the class (a) failure affects one case (C3), and it does not block the evidence contract (C3 was reached at rank 1 with the query `encrypt`, and def/sig/refs then supplied the evidence). The outcome is in the rule's gap and is therefore an explicit judgement, not a rule output.
+- Task 10 closed three fixable class (a) gaps: digit splitting, light stemming, file scope. Task 10b closed pagination, so a file with more than 10 symbols can now be fully enumerated. Verified: tsc clean, vitest 158 passed, commit 33bed57.
+- Remaining class (a) gap: no body-text or synonym retrieval (C3; demo D5: `search suppress` returns nothing). Remaining class (c) gap: nested/local declarations are unindexed (C7).
+
+Decision
+PROCEED TO STEP 2. The Step 1 foundation is accepted as ready with a documented boundary: no body-text/synonym retrieval and no nested-symbol indexing. This is a judgement call, not a result of the decision rule, and the rule text is unchanged.
+
+Reasoning
+- Synonym bridging is by design the investigator's job (LLM query expansion); C3 was reachable through such a query.
+- Body text is the stronger gap, because AI-written duplicates often have no docs and differing names. It is therefore the first Step 2 experiment, not deferred: an optional body-token index (identifiers, callee names, imported modules), off by default, evaluated on blind cases.
+
+Pre-registered conditions (fixed now, before the experiment)
+- Evaluation set: at least 4 NEW different-vocabulary cases written blind (not by the agent that wrote the original planted cases, and not tuned against the index), plus the existing negative controls.
+- Success: the body index raises the number of blind cases reaching YES by at least 2 versus the Task 10 index, and adds no negative-control failure, and never lowers a canonical's rank on the original 33 queries.
+- If it does not meet this, the boundary stays and the investigator is evaluated with query expansion only.
+
+What would reverse this decision
+- The control experiment (Part 2) showing agents reliably reuse existing code under the plain prompt: the product premise is then in question and retrieval work stops until that is understood.
+- The blind-case results showing the tools cannot give the investigator evidence even with body tokens.
