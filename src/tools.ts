@@ -21,6 +21,7 @@ import {
   err,
   ok,
 } from "./schemas.js";
+import { tokenize } from "./text.js";
 import type {
   GetDefinitionOutput,
   GetReferencesOutput,
@@ -46,19 +47,6 @@ function invalidArgs(inputError: {
   const where = issue && issue.path.length > 0 ? issue.path.join(".") : "input";
   const message = `${where}: ${issue ? issue.message : "invalid input"}`;
   return err("INVALID_ARGS", message.slice(0, 200));
-}
-
-/** Split on non-alphanumerics and camelCase boundaries; lowercase; drop empties. */
-function tokenize(text: string): Set<string> {
-  const spaced = text
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2");
-  const tokens = new Set<string>();
-  for (const part of spaced.split(/[^A-Za-z0-9]+/)) {
-    const lower = part.toLowerCase();
-    if (lower.length > 0) tokens.add(lower);
-  }
-  return tokens;
 }
 
 interface Prepared {

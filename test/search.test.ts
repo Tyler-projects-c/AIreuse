@@ -251,4 +251,19 @@ describe("search_symbols", () => {
     const second = tools.search_symbols({ query: "shipping cost" });
     expect(second).toEqual(first);
   });
+
+  it("reaches a trailing-digit name from its split part", () => {
+    const dir = makeTempProject({
+      "src/round.ts": `export function round2(n: number): number {\n  return Math.round(n * 100) / 100;\n}\n`,
+      "src/money.ts": `/** Rounds up to two decimal places. */\nexport function roundUpCents(n: number): number {\n  return Math.ceil(n * 100) / 100;\n}\n`,
+    });
+    const tools = createTools(buildIndex(buildProject(dir)));
+    // "round" used to return only roundUpCents; round2 is now reachable.
+    const byPart = okData(tools.search_symbols({ query: "round" })).results;
+    expect(byPart.map((r) => r.name)).toContain("round2");
+    // The exact name still matches and still ranks first.
+    const byExact = okData(tools.search_symbols({ query: "round2" })).results;
+    expect(byExact[0]?.name).toBe("round2");
+    expect(byExact[0]?.match).toBe("name");
+  });
 });
